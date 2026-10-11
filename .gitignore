@@ -1,0 +1,35 @@
+node_modules/
+
+# Env
+.env*
+!.env.example
+!.env.production.example
+
+# Expo / builds
+.expo/
+expo-env.d.ts
+dist/
+web-build/
+dist-android/
+output/
+
+# Local storage / generated files
+storage/
+storage-test/
+tests-output/
+artifacts/
+coverage/
+*.log
+*.tsbuildinfo
+
+# OS
+.DS_Store
+
+# Mobile credentials / certificates
+*.jks
+*.keystore
+*.p8
+*.p12
+*.key
+*.pem
+*.mobileprovision

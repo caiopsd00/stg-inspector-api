@@ -1,0 +1,11 @@
+node_modules
+storage
+output
+.env*
+tests-output
+storage-test
+.git
+dist
+legacy
+images
+assets

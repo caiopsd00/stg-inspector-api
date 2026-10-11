@@ -1,0 +1,36 @@
+name: brlift
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: brlift
+      POSTGRES_USER: brlift
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-brlift_local}
+    ports:
+      - "127.0.0.1:5440:5432"
+    volumes:
+      - brlift-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U brlift -d brlift"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  api:
+    build: .
+    profiles: ["app"]
+    environment:
+      DATABASE_URL: postgresql://brlift:${POSTGRES_PASSWORD:-brlift_local}@postgres:5432/brlift
+      PORT: 3333
+      WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:5174}
+      STORAGE_DIR: /app/storage
+      NODE_ENV: ${NODE_ENV:-development}
+    ports: ["3333:3333"]
+    volumes: ["brlift-storage:/app/storage"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["sh", "-c", "node dist/server/migrate.js && node dist/server/index.js"]
+    restart: unless-stopped
+volumes:
+  brlift-postgres:
+  brlift-storage:

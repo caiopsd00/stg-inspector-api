@@ -1,0 +1,39 @@
+{
+  "name": "brlift-api",
+  "version": "1.0.0",
+  "private": true,
+  "description": "API BR LIFT: operação, inspeções, sincronização e documentos",
+  "main": "dist/server/index.js",
+  "scripts": {
+    "dev": "tsx watch server/index.ts",
+    "build": "tsc",
+    "start": "node dist/server/index.js",
+    "db:migrate": "tsx server/migrate.ts",
+    "create:admin": "tsx server/create-user.ts",
+    "create:user": "tsx server/create-user.ts",
+    "test": "tsx --test tests/domain.test.ts tests/relational-utils.test.ts tests/template.test.ts tests/users.test.ts",
+    "test:integration": "tsx --test tests/integration.test.ts",
+    "test:e2e": "npm run build && node scripts/e2e.mjs"
+  },
+  "dependencies": {
+    "sharp": "^0.35.4",
+    "dotenv": "^16.5.0",
+    "express": "^5.1.0",
+    "pg": "^8.16.3",
+    "zod": "^3.24.3",
+    "jszip": "^3.10.1",
+    "pdfkit": "^0.17.2"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1",
+    "typescript": "^5.8.3",
+    "tsx": "^4.19.3",
+    "@types/node": "^22.14.1",
+    "@types/express": "^5.0.1",
+    "@types/pg": "^8.15.2",
+    "@types/pdfkit": "^0.17.3"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
