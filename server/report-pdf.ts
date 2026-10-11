@@ -336,7 +336,6 @@ export async function createReportPdf(
         [reason.description, service.notes].filter(Boolean).join("\n"),
       );
       for (const photo of service.photos) {
-        textBlock(photo.name, { bold: true, size: 7 });
         await image(photo, { width: 235, height: 155 });
       }
     }

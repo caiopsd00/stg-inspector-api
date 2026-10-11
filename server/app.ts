@@ -13,16 +13,18 @@ import { createUsersRoutes } from "./routes/users.routes.js";
 export function createApp() {
   const app = express();
   app.disable("x-powered-by");
-  const origins = (process.env.WEB_ORIGIN || "http://localhost:5174").split(
-    ",",
-  );
+  const allowAllOrigins = process.env.CORS_ALLOW_ALL_ORIGINS === "true";
+  const origins = (process.env.WEB_ORIGIN || "http://localhost:5174")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
 
   app.use((req, res, next) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("Cache-Control", "no-store");
     res.setHeader("X-Frame-Options", "DENY");
     const origin = req.headers.origin;
-    if (origin && !origins.includes(origin)) {
+    if (origin && !allowAllOrigins && !origins.includes(origin)) {
       res.status(403).json({ error: "Origem não autorizada." });
       return;
     }

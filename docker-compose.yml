@@ -22,6 +22,7 @@ services:
       DATABASE_URL: postgresql://brlift:${POSTGRES_PASSWORD:-brlift_local}@postgres:5432/brlift
       PORT: 3333
       WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:5174}
+      CORS_ALLOW_ALL_ORIGINS: ${CORS_ALLOW_ALL_ORIGINS:-false}
       STORAGE_DIR: /app/storage
       NODE_ENV: ${NODE_ENV:-development}
     ports: ["3333:3333"]

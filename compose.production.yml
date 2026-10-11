@@ -22,6 +22,7 @@ services:
       PGUSER: brlift
       PGPASSWORD: ${POSTGRES_PASSWORD:?Defina uma senha forte}
       WEB_ORIGIN: https://${DOMAIN:?Defina o domínio}
+      CORS_ALLOW_ALL_ORIGINS: ${CORS_ALLOW_ALL_ORIGINS:-false}
       STORAGE_DIR: /app/storage
       PORT: 3333
       NODE_ENV: production

@@ -11,7 +11,7 @@
     "db:migrate": "tsx server/migrate.ts",
     "create:admin": "tsx server/create-user.ts",
     "create:user": "tsx server/create-user.ts",
-    "test": "tsx --test tests/domain.test.ts tests/relational-utils.test.ts tests/template.test.ts tests/users.test.ts",
+    "test": "tsx --test tests/cors.test.ts tests/domain.test.ts tests/relational-utils.test.ts tests/template.test.ts tests/users.test.ts",
     "test:integration": "tsx --test tests/integration.test.ts",
     "test:e2e": "npm run build && node scripts/e2e.mjs"
   },

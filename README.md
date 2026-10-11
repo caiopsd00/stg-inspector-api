@@ -74,6 +74,9 @@ Migrations só são necessárias quando o schema mudar; não resetam o banco.
 - DATABASE_URL na .env deve apontar para localhost:5440 fora do Docker.
 - Senha brlift_local do exemplo é APENAS de desenvolvimento.
 - Web autorizado por padrão: http://localhost:5174.
+- CORS_ALLOW_ALL_ORIGINS=false (padrão) limita o acesso a WEB_ORIGIN, que aceita
+  origens separadas por vírgula. true aceita qualquer Origin, inclusive com
+  credenciais; use com cautela e reinicie a API após alterar essa variável.
 - PDF de inspeção precisa de LibreOffice instalado e SOFFICE_PATH configurado.
   PDF de atendimento e DOCX não precisam do LibreOffice.
 
