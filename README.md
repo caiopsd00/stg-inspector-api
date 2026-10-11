@@ -1,7 +1,7 @@
 # BR LIFT — API
 
 Backend único Node.js/TypeScript + Express + PostgreSQL 16.
-Web: stg-system-v2. Mobile: stg-inspector-mobile. STG/Supabase e Nex são separados.
+Web: stg-system-web. Mobile: stg-inspector-mobile. STG/Supabase e Nex são separados.
 
 Conferência V0/proposta e correções de 09/10/2026:
 matriz de funcionalidades, testes e limites na documentação local, fora deste repositório.
@@ -79,7 +79,7 @@ Migrations só são necessárias quando o schema mudar; não resetam o banco.
 
 ## Abrir web e Android
 
-Em outro terminal, na pasta stg-system-v2:
+Em outro terminal, na pasta stg-system-web:
 
     npm ci
     npm run dev

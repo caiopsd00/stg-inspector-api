@@ -8,7 +8,7 @@ import sharp from "sharp";
 import { chromium } from "playwright";
 if (!process.env.DATABASE_URL?.endsWith("/brlift_test"))
   throw Error("Defina DATABASE_URL para brlift_test.");
-const webRoot = path.resolve(process.env.WEB_REPO || "../stg-system-v2");
+const webRoot = path.resolve(process.env.WEB_REPO || "../stg-system-web");
 const webPort = Number(process.env.E2E_WEB_PORT || 5176);
 process.env.WEB_ORIGIN = "http://127.0.0.1:" + webPort;
 process.env.STORAGE_DIR = process.env.STORAGE_DIR || "storage-test";
