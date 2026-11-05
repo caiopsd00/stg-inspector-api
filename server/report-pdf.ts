@@ -1,6 +1,6 @@
-import fs from "node:fs/promises";
-import path from "node:path";
 import PDFDocument from "pdfkit";
+import { mediaStorageKey } from "./object-storage/index.js";
+import type { ObjectStorage } from "./object-storage/types.js";
 import {
   dayTotals,
   participantTotals,
@@ -23,7 +23,7 @@ const PAGE_BOTTOM = 778;
  * visual language, with the current normalized report fields and per-person day data. */
 export async function createReportPdf(
   record: Entry,
-  storage: string,
+  storage: ObjectStorage,
 ): Promise<Buffer> {
   const data = record.payload as Report;
   const doc = new PDFDocument({
@@ -245,7 +245,7 @@ export async function createReportPdf(
     if (!media?.uri) return;
     const match = /^\/api\/media\/([a-f0-9-]{36})$/.exec(media.uri);
     if (!match) return;
-    const bytes = await fs.readFile(path.join(storage, "media", match[1]));
+    const bytes = await storage.read(mediaStorageKey(match[1]));
     ensure(box.height + 24);
     const y = doc.y;
     doc.image(bytes, MARGIN + 9, y + 12, {
@@ -529,7 +529,7 @@ export async function createReportPdf(
       });
     const match = signature?.uri.match(/^\/api\/media\/([a-f0-9-]{36})$/);
     if (match) {
-      const bytes = await fs.readFile(path.join(storage, "media", match[1]));
+      const bytes = await storage.read(mediaStorageKey(match[1]));
       doc.image(bytes, x + 12, signatureY + 18, {
         fit: [signatureWidth - 24, 50],
         align: "center",

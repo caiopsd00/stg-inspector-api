@@ -33,6 +33,8 @@ profissional da equipe exige revisar quem trabalhou nos dias afetados.
 
 ## Desenvolvimento: somente o banco no Docker
 
+Revisão de publicação/segredos: [SECURITY.md](SECURITY.md).
+
 Use Node 22.12+ ou 24, npm e Docker. Confira com `node -v`.
 Na pasta stg-inspector-api, na primeira configuração:
 
@@ -75,8 +77,10 @@ Migrations só são necessárias quando o schema mudar; não resetam o banco.
 - Senha brlift_local do exemplo é APENAS de desenvolvimento.
 - Web autorizado por padrão: http://localhost:5174.
 - CORS_ALLOW_ALL_ORIGINS=false (padrão) limita o acesso a WEB_ORIGIN, que aceita
-  origens separadas por vírgula. true aceita qualquer Origin, inclusive com
-  credenciais; use com cautela e reinicie a API após alterar essa variável.
+  origens separadas por vírgula. true serve somente a testes locais e é recusado
+  em produção. Produção exige origens HTTPS explícitas.
+- TRUST_PROXY=0 no acesso direto local; o Compose de produção usa 1 para o
+  único proxy Caddy, sem publicar a porta da API. Não confie em proxies arbitrários.
 - PDF de inspeção precisa de LibreOffice instalado e SOFFICE_PATH configurado.
   PDF de atendimento e DOCX não precisam do LibreOffice.
 
@@ -190,6 +194,24 @@ pergunta os dados no terminal. Reexecutar create:admin/create:user com o mesmo
 e-mail redefine senha/perfil e atualiza o vínculo técnico; revoga sessões.
 Faça conscientemente.
 
-Produção: compose.production.yml; instruções de implantação na documentação local.
-Não use senha local. Arquitetura, aceite e validação também estão na documentação local.
+## Piloto na VPS Hostinger: 1 vCPU, 4 GB RAM e 50 GB
+
+Use `compose.production.yml` com PostgreSQL e arquivos nos volumes locais da VPS.
+O piloto não exige armazenamento externo, conta Google ou rotina de backup.
+Fotos e assinaturas ficam privadas e são lidas somente pela API autenticada;
+os PDFs são gerados sob demanda, sem guardar cópias duplicadas em disco.
+
+O Compose limita API/LibreOffice a 1536 MiB, PostgreSQL a 768 MiB e web/Caddy
+a 128 MiB cada. São tetos, não memória reservada. A API processa um documento
+e um upload por vez, usa cinco conexões PostgreSQL e limita o cache de imagens.
+Se já houver processamento em andamento, responde 429 para tentar novamente,
+sem manter uma fila ilimitada de fotos/PDFs na memória. Logs têm rotação.
+As variáveis `DOCUMENT_CONCURRENCY` e `MEDIA_UPLOAD_CONCURRENCY` aceitam 1–4
+no uso fora do Compose; na VPS piloto ambos ficam em 1.
+
+Inicialização, domínio, administrador, atualização e validação:
+[deploy/PRODUCTION.md](deploy/PRODUCTION.md).
+O adaptador GCS anterior permanece opcional e inativo no modo `local/local`;
+[deploy/STORAGE.md](deploy/STORAGE.md) documenta uma migração futura, fora deste piloto.
+Não use a senha do banco de desenvolvimento em produção.
 O código histórico foi arquivado fora deste repositório e não entra no build/deploy.

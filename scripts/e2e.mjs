@@ -8,22 +8,27 @@ import sharp from "sharp";
 import { chromium } from "playwright";
 if (!process.env.DATABASE_URL?.endsWith("/brlift_test"))
   throw Error("Defina DATABASE_URL para brlift_test.");
+process.env.NODE_ENV = "test";
 const webRoot = path.resolve(process.env.WEB_REPO || "../stg-system-web");
 const webPort = Number(process.env.E2E_WEB_PORT || 5176);
 process.env.WEB_ORIGIN = "http://127.0.0.1:" + webPort;
 process.env.STORAGE_DIR = process.env.STORAGE_DIR || "storage-test";
 const { pool } = await import("../dist/server/db.js");
 const { migrate } = await import("../dist/server/migrate.js");
-const { hashPassword } = await import("../dist/server/auth.js");
+const { createUserAndTechnician } = await import("../dist/server/users.js");
 const { createApp } = await import("../dist/server/app.js");
+const { createTemplateSections } = await import("../dist/contracts/inspection-template.js");
 await migrate();
 const tag = crypto.randomUUID().slice(0, 8),
   email = "qa-" + tag + "@example.test",
   password = crypto.randomBytes(18).toString("hex");
-await pool.query(
-  "INSERT INTO users(id,email,name,password_hash,role) VALUES($1,$2,'QA BR LIFT',$3,'admin')",
-  [crypto.randomUUID(), email, await hashPassword(password)],
-);
+await createUserAndTechnician({
+  name: "QA BR LIFT",
+  email,
+  cpf: String(crypto.randomInt(10_000_000_000, 99_999_999_999)),
+  password,
+  role: "admin",
+});
 const server = createApp().listen(0, "127.0.0.1");
 await new Promise((r) => server.once("listening", r));
 const vite = spawn(
@@ -50,6 +55,7 @@ vite.stderr.on("data", (c) => (viteLog += c));
 let browser;
 const output = path.resolve("tests-output/e2e");
 await fs.mkdir(output, { recursive: true });
+await fs.rm(path.join(output, "falha.png"), { force: true });
 try {
   for (let i = 0; i < 100; i++) {
     try {
@@ -1264,26 +1270,6 @@ try {
       .getByRole("radio", { name: "Sim", exact: true })
       .check();
   async function sign(label) {
-    if (label === "Assinatura da inspeção") {
-      const inspectionCanvas = page.getByLabel(label, { exact: true });
-      await inspectionCanvas.scrollIntoViewIfNeeded();
-      const inspectionBox = await inspectionCanvas.boundingBox();
-      await page.mouse.move(inspectionBox.x + 30, inspectionBox.y + 50);
-      await page.mouse.down();
-      await page.mouse.move(inspectionBox.x + 100, inspectionBox.y + 80, {
-        steps: 6,
-      });
-      await page.mouse.move(inspectionBox.x + 200, inspectionBox.y + 30, {
-        steps: 6,
-      });
-      await page.mouse.up();
-      await inspectionCanvas
-        .locator("..")
-        .getByRole("button", { name: "Salvar assinatura", exact: true })
-        .click();
-      await page.getByAltText(label + " salva", { exact: true }).waitFor();
-      return;
-    }
     const card = page
       .locator(".br-signature")
       .filter({ has: page.getByRole("heading", { name: label, exact: true }) });
@@ -1349,15 +1335,11 @@ try {
   await page
     .getByRole("button", { name: "Finalizar atendimento", exact: true })
     .click();
-  await page.getByRole("status").filter({ hasText: "finalizado" }).waitFor();
   const reportDownload = page.waitForEvent("download");
-  await page
-    .getByRole("button", { name: "Baixar PDF salvo", exact: true })
-    .click();
+  await page.getByRole("dialog", { name: "Finalizar atendimento?", exact: true })
+    .getByRole("button", { name: "Finalizar e baixar PDF", exact: true }).click();
+  await page.getByRole("status").filter({ hasText: "finalizado" }).waitFor();
   await (await reportDownload).saveAs(path.join(output, "atendimento.pdf"));
-  await page
-    .getByRole("button", { name: "← Voltar à gestão", exact: true })
-    .click();
   await page
     .getByLabel("Buscar número, cliente ou técnico", { exact: true })
     .fill("QA-AT-" + tag);
@@ -1536,10 +1518,12 @@ try {
       "345 min de trabalho",
     ),
   );
-  await page.getByRole("button", { name: "Salvar", exact: true }).click();
+  await page.getByRole("button", { name: "Finalizar atendimento", exact: true }).click();
+  await page.getByRole("dialog", { name: "Finalizar atendimento?", exact: true })
+    .getByRole("button", { name: "Só finalizar", exact: true }).click();
   await page
     .getByRole("status")
-    .filter({ hasText: "Registro salvo" })
+    .filter({ hasText: "finalizado" })
     .waitFor();
   await page.getByRole("button", { name: "Inspeções", exact: true }).click();
   await page
@@ -1552,7 +1536,7 @@ try {
     .getByLabel("Cliente", { exact: true })
     .selectOption({ label: "Cliente QA " + tag + " — 123" + doc });
   await page
-    .getByLabel("Técnico", { exact: true })
+    .getByLabel("Inspeção realizada por", { exact: true })
     .selectOption({ label: "Técnico QA " + tag + " — " + doc });
   await page
     .getByLabel("Equipamento", { exact: true })
@@ -1566,30 +1550,50 @@ try {
       .getByRole("button", { name: "Hoje", exact: true })
       .click();
   }
-  for (const summary of await page.locator("details > summary").all())
-    await summary.click();
-  for (const button of await page
-    .getByRole("button", { name: "A", exact: true })
-    .all())
-    await button.click();
-  await page
-    .getByLabel("Observações do item", { exact: true })
-    .first()
-    .fill("Conferido presencialmente");
-  await page
-    .getByLabel("Adicionar fotos", { exact: true })
-    .nth(2)
-    .setInputFiles([
+  await page.getByLabel("RESULTADO DA VISTORIA", { exact: true }).selectOption("Aprovada");
+  const inspectionSections = createTemplateSections();
+  const titleFor = (item) => `${item.code} — ${item.name}`;
+  await openSection("Checklist técnico");
+  await page.getByRole("button", { name: /Modo lista/ }).click();
+  const firstSection = inspectionSections[0];
+  // Existing answers must be skipped by the guided flow.
+  for (const item of [firstSection.items[0], firstSection.items[2]]) {
+    await openSection("Checklist técnico", firstSection.name, titleFor(item));
+    await page.getByRole("group", { name: "Situação " + item.code, exact: true })
+      .getByRole("button", { name: "A", exact: true }).click();
+  }
+  await page.getByRole("button", { name: /Pergunta a pergunta/ }).click();
+  const guided = page.getByRole("dialog", { name: titleFor(firstSection.items[1]), exact: true });
+  await guided.waitFor();
+  await guided.getByRole("group", { name: "Situação " + firstSection.items[1].code, exact: true })
+    .getByRole("button").first().click();
+  await guided.getByRole("button", { name: "Próximo pendente →", exact: true }).click();
+  const nextGuided = page.getByRole("dialog", { name: titleFor(inspectionSections[1].items[0]), exact: true });
+  await nextGuided.waitFor();
+  await nextGuided.getByRole("button", { name: "Voltar ao checklist em modo lista", exact: true }).click();
+  for (const section of inspectionSections) {
+    for (const item of section.items) {
+      await openSection("Checklist técnico", section.name, titleFor(item));
+      const answer = page.getByRole("group", { name: "Situação " + item.code, exact: true })
+        .getByRole("button", { name: "A", exact: true });
+      if (await answer.getAttribute("aria-pressed") !== "true") await answer.click();
+    }
+  }
+  await page.getByLabel("Somente pendentes", { exact: true }).check();
+  await page.getByText("Nenhum item encontrado.", { exact: true }).waitFor();
+  await page.getByLabel("Somente pendentes", { exact: true }).uncheck();
+  await openSection("Checklist técnico", firstSection.name, titleFor(firstSection.items[0]));
+  const firstItemPanel = page.getByRole("heading", { name: titleFor(firstSection.items[0]), exact: true }).locator("..");
+  await firstItemPanel.getByLabel("Observações do item", { exact: true }).fill("Conferido presencialmente");
+  await firstItemPanel.getByLabel("Adicionar fotos", { exact: true }).setInputFiles([
       { name: "inspecao-1.png", mimeType: "image/png", buffer: photo },
       { name: "inspecao-2.png", mimeType: "image/png", buffer: photo },
     ]);
   await page.getByAltText("inspecao-2.png", { exact: true }).waitFor();
-  const extra = page.locator(".br-item").filter({
-    has: page.getByRole("heading", {
-      name: "126 — Cabo de aço do guincho principal",
-      exact: true,
-    }),
-  });
+  const extraSection = inspectionSections.find((section) => section.items.some((item) => item.code === "126"));
+  const extraItem = extraSection.items.find((item) => item.code === "126");
+  await openSection("Checklist técnico", extraSection.name, titleFor(extraItem));
+  const extra = page.getByRole("heading", { name: titleFor(extraItem), exact: true }).locator("..");
   await extra
     .getByLabel("Adicionar fotos", { exact: true })
     .nth(1)
@@ -1602,19 +1606,17 @@ try {
   await extra
     .getByLabel("Observações do item", { exact: true })
     .fill("Diâmetro nominal medido: 20 mm; laudo informado pelo examinador.");
-  await sign("Assinatura da inspeção");
+  await openSection("Assinatura e finalização");
+  await sign("Assinatura do técnico");
+  await sign("Assinatura do cliente");
   await page
     .getByRole("button", { name: "Finalizar inspeção", exact: true })
     .click();
-  await page.getByRole("status").filter({ hasText: "finalizado" }).waitFor();
   const inspectionDownload = page.waitForEvent("download");
-  await page
-    .getByRole("button", { name: "Baixar PDF salvo", exact: true })
-    .click();
+  await page.getByRole("dialog", { name: "Finalizar inspeção?", exact: true })
+    .getByRole("button", { name: "Finalizar e baixar PDF", exact: true }).click();
+  await page.getByRole("status").filter({ hasText: "finalizado" }).waitFor();
   await (await inspectionDownload).saveAs(path.join(output, "inspecao.pdf"));
-  await page
-    .getByRole("button", { name: "← Voltar à gestão", exact: true })
-    .click();
   await page
     .getByLabel("Buscar número, cliente ou técnico", { exact: true })
     .fill("QA-IN-" + tag);

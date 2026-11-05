@@ -11,27 +11,32 @@
     "db:migrate": "tsx server/migrate.ts",
     "create:admin": "tsx server/create-user.ts",
     "create:user": "tsx server/create-user.ts",
-    "test": "tsx --test tests/cors.test.ts tests/domain.test.ts tests/relational-utils.test.ts tests/template.test.ts tests/users.test.ts",
+    "storage:migrate": "tsx server/migrate-media-to-gcs.ts",
+    "storage:smoke:gcs": "tsx server/smoke-gcs.ts",
+    "test": "tsx --test tests/concurrency.test.ts tests/cors.test.ts tests/domain.test.ts tests/media.test.ts tests/object-storage.test.ts tests/relational-utils.test.ts tests/secret-check.test.ts tests/security.test.ts tests/template.test.ts tests/users.test.ts",
     "test:integration": "tsx --test tests/integration.test.ts",
+    "test:production": "node scripts/production-smoke.mjs",
+    "security:check": "node scripts/check-secrets.mjs",
     "test:e2e": "npm run build && node scripts/e2e.mjs"
   },
   "dependencies": {
-    "sharp": "^0.35.4",
+    "@google-cloud/storage": "^8.4.0",
     "dotenv": "^16.5.0",
     "express": "^5.1.0",
-    "pg": "^8.16.3",
-    "zod": "^3.24.3",
     "jszip": "^3.10.1",
-    "pdfkit": "^0.17.2"
+    "pdfkit": "^0.17.2",
+    "pg": "^8.16.3",
+    "sharp": "^0.35.5",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
-    "playwright": "1.62.1",
-    "typescript": "^5.8.3",
-    "tsx": "^4.19.3",
-    "@types/node": "^22.14.1",
     "@types/express": "^5.0.1",
+    "@types/node": "^22.14.1",
+    "@types/pdfkit": "^0.17.3",
     "@types/pg": "^8.15.2",
-    "@types/pdfkit": "^0.17.3"
+    "playwright": "1.62.1",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.3"
   },
   "engines": {
     "node": ">=22"

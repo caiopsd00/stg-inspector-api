@@ -4,7 +4,12 @@ import pg from "pg";
 pg.types.setTypeParser(1082, (value) => value);
 export const pool = new pg.Pool({
   connectionString: process.env.DATABASE_URL,
-  max: 10,
+  max: 5,
+  connectionTimeoutMillis: 5000,
+  idleTimeoutMillis: 30000,
+});
+pool.on("error", (error) => {
+  console.error("Erro em conexão ociosa do PostgreSQL:", error.message);
 });
 export async function transaction<T>(
   fn: (db: pg.PoolClient) => Promise<T>,

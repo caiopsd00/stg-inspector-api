@@ -9,15 +9,13 @@ import { createDocumentsRoutes } from "./routes/documents.routes.js";
 import { createMediaRoutes } from "./routes/media.routes.js";
 import { createRecordsRoutes } from "./routes/records.routes.js";
 import { createUsersRoutes } from "./routes/users.routes.js";
+import { httpConfig } from "./http-config.js";
 
 export function createApp() {
   const app = express();
   app.disable("x-powered-by");
-  const allowAllOrigins = process.env.CORS_ALLOW_ALL_ORIGINS === "true";
-  const origins = (process.env.WEB_ORIGIN || "http://localhost:5174")
-    .split(",")
-    .map((value) => value.trim())
-    .filter(Boolean);
+  const { allowAllOrigins, origins, trustProxy } = httpConfig();
+  app.set("trust proxy", trustProxy);
 
   app.use((req, res, next) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
@@ -47,7 +45,6 @@ export function createApp() {
     }
     next();
   });
-  app.use(express.json({ limit: "16mb" }));
   app.get("/health", async (_req, res) => {
     res.json({
       ok: true,
@@ -57,8 +54,13 @@ export function createApp() {
   });
 
   const authRoutes = createAuthRoutes();
-  app.use("/api/auth", authRoutes.publicRoutes);
+  app.use(
+    "/api/auth",
+    express.json({ limit: "16kb", inflate: false }),
+    authRoutes.publicRoutes,
+  );
   app.use("/api", requireAuth);
+  app.use("/api", express.json({ limit: "16mb", inflate: false }));
   app.use("/api/auth", authRoutes.privateRoutes);
 
   app.use("/api", async (req, res, next) => {
@@ -96,6 +98,14 @@ export function createApp() {
       res: express.Response,
       _next: express.NextFunction,
     ) => {
+      if (error.type === "entity.parse.failed") {
+        res.status(400).json({ error: "Corpo JSON inválido." });
+        return;
+      }
+      if (error.type === "entity.too.large") {
+        res.status(413).json({ error: "A requisição excede o tamanho permitido." });
+        return;
+      }
       if (error instanceof z.ZodError) {
         res.status(422).json({
           error: error.issues

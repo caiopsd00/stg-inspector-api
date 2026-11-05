@@ -6,11 +6,12 @@ import { promisify } from "node:util";
 import { createInspectionDocxAsync } from "./inspection-docx.js";
 import { createReportPdf } from "./report-pdf.js";
 import type { Entry } from "../contracts/domain.js";
+import type { ObjectStorage } from "./object-storage/types.js";
 const run = promisify(execFile);
 export async function documentForRecord(
   record: Entry,
   format: "pdf" | "docx",
-  storage: string,
+  storage: ObjectStorage,
 ) {
   if (record.kind === "reports") {
     if (format !== "pdf")
@@ -19,13 +20,16 @@ export async function documentForRecord(
       });
     return createReportPdf(record, storage);
   }
-  const docx = await createInspectionDocxAsync({
-    ...record.payload,
-    finalizedAt:
-      record.status === "finalized"
-        ? record.updatedAt || new Date().toISOString()
-        : undefined,
-  });
+  const docx = await createInspectionDocxAsync(
+    {
+      ...record.payload,
+      finalizedAt:
+        record.status === "finalized"
+          ? record.updatedAt || new Date().toISOString()
+          : undefined,
+    },
+    storage,
+  );
   if (format === "docx") return docx;
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "brlift-document-"));
   try {

@@ -3,6 +3,8 @@ import { cleanInspectionTemplateXml } from "../contracts/inspection-template-cle
 import path from "node:path";
 import JSZip from "jszip";
 import sharp from "sharp";
+import { getObjectStorage, mediaStorageKey } from "./object-storage/index.js";
+import type { ObjectStorage } from "./object-storage/types.js";
 import {
   Inspection,
   InspectionImage,
@@ -77,26 +79,10 @@ function fitImageWithinBounds(
   };
 }
 
-async function getImagePixelSizeAsync(image: InspectionImage) {
-  const bytes = await imageBytes(image.uri);
-  const size = await sharp(bytes, { limitInputPixels: 40000000 }).metadata();
-  return { width: size.width!, height: size.height! };
-}
-async function imageBytes(uri: string) {
+async function imageBytes(uri: string, storage: ObjectStorage) {
   const match = /^\/api\/media\/([a-f0-9-]{36})$/.exec(uri);
   if (!match) throw Error("Referência de imagem inválida.");
-  return fs.readFile(
-    path.resolve(process.env.STORAGE_DIR || "storage", "media", match[1]),
-  );
-}
-async function readFileAsBase64DataUrlAsync(uri: string) {
-  const bytes = await imageBytes(uri);
-  return (
-    "data:image/" +
-    (bytes[0] === 255 ? "jpeg" : "png") +
-    ";base64," +
-    bytes.toString("base64")
-  );
+  return storage.read(mediaStorageKey(match[1]));
 }
 function getField(inspection: Inspection, key: string) {
   return inspection.documentFields[key]?.trim() || "";
@@ -261,14 +247,21 @@ async function imageToReplacement(
   key: string,
   image: InspectionImage | undefined,
   bounds: ImageBounds,
+  storage: ObjectStorage,
 ) {
   if (!image) {
     return undefined;
   }
 
-  const dataUrl = await readFileAsBase64DataUrlAsync(image.uri);
+  const bytes = await imageBytes(image.uri, storage);
+  const size = await sharp(bytes, { limitInputPixels: 40000000 }).metadata();
+  const dataUrl =
+    "data:image/" +
+    (bytes[0] === 255 ? "jpeg" : "png") +
+    ";base64," +
+    bytes.toString("base64");
   const dimensions = fitImageWithinBounds(
-    await getImagePixelSizeAsync(image),
+    { width: size.width!, height: size.height! },
     bounds,
   );
 
@@ -281,7 +274,10 @@ async function imageToReplacement(
   };
 }
 
-async function buildImageReplacements(inspection: Inspection) {
+async function buildImageReplacements(
+  inspection: Inspection,
+  storage: ObjectStorage,
+) {
   const replacements: ImageReplacement[] = [];
   const addImageReplacements = async (
     key: string,
@@ -289,7 +285,7 @@ async function buildImageReplacements(inspection: Inspection) {
     bounds: ImageBounds,
   ) => {
     for (const image of images || []) {
-      const replacement = await imageToReplacement(key, image, bounds);
+      const replacement = await imageToReplacement(key, image, bounds, storage);
 
       if (replacement) {
         replacements.push(replacement);
@@ -317,10 +313,15 @@ async function buildImageReplacements(inspection: Inspection) {
         const slotIndex = Math.min(index, imageSlots.length - 1);
         const slotKey = imageSlots[slotIndex];
         const isPrimarySlot = slotIndex === 0;
-        const replacement = await imageToReplacement(slotKey, image, {
-          widthInches: isPrimarySlot ? 2.4 : 5.2,
-          heightInches: isPrimarySlot ? 1.6 : 3.2,
-        });
+        const replacement = await imageToReplacement(
+          slotKey,
+          image,
+          {
+            widthInches: isPrimarySlot ? 2.4 : 5.2,
+            heightInches: isPrimarySlot ? 1.6 : 3.2,
+          },
+          storage,
+        );
 
         if (replacement) {
           replacements.push(replacement);
@@ -400,7 +401,10 @@ async function loadTemplateZip() {
   );
 }
 
-export async function createInspectionDocxAsync(inspection: Inspection) {
+export async function createInspectionDocxAsync(
+  inspection: Inspection,
+  storage: ObjectStorage = getObjectStorage(),
+) {
   const zip = await loadTemplateZip();
   // Preserve the technical template. Replace the previous company's header/footer.
   for (const name of Object.keys(zip.files).filter((n) =>
@@ -453,7 +457,7 @@ export async function createInspectionDocxAsync(inspection: Inspection) {
   });
   let relsXml = await relsFile.async("string");
   const textValues = buildTextValues(inspection);
-  const imageReplacements = await buildImageReplacements(inspection);
+  const imageReplacements = await buildImageReplacements(inspection, storage);
   let nextRelationshipId = getNextRelationshipId(relsXml);
   const imageParagraphsByKey = new Map<string, string[]>();
 

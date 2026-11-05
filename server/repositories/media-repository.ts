@@ -1,8 +1,10 @@
 import { pool } from "../db.js";
+import { mediaStorageKey } from "../object-storage/index.js";
 import type { DB } from "../relational-utils.js";
 
 export type MediaAccessRow = {
   mime: string;
+  storage_key: string;
   created_by: string;
   in_own_report: boolean;
   in_own_inspection: boolean;
@@ -20,6 +22,7 @@ export async function insertMediaMetadata(input: {
   id: string;
   hash: string;
   size: number;
+  mime: "image/png" | "image/jpeg";
   userId: string;
   name: string;
   width?: number;
@@ -29,12 +32,12 @@ export async function insertMediaMetadata(input: {
     "INSERT INTO files(id,mime,sha256,size,created_by,name,storage_key,width,height) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)",
     [
       input.id,
-      "image/png",
+      input.mime,
       input.hash,
       input.size,
       input.userId,
       input.name,
-      "media/" + input.id,
+      mediaStorageKey(input.id),
       input.width,
       input.height,
     ],
@@ -47,7 +50,7 @@ export async function mediaAccessRow(
   db: DB = pool,
 ) {
   const result = await db.query(
-    `SELECT f.mime,f.created_by,
+    `SELECT f.mime,f.storage_key,f.created_by,
        EXISTS (
          SELECT 1 FROM service_order_files sf
          JOIN service_order_team tm ON tm.service_order_id=sf.service_order_id

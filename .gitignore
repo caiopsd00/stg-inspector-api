@@ -33,3 +33,15 @@ coverage/
 *.key
 *.pem
 *.mobileprovision
+
+# Private credentials and database copies
+credentials/
+secrets/
+*credentials*.json
+*service-account*.json
+*service_account*.json
+*.pfx
+*.dump
+*.sql.gz
+backups/
+.brlift-backups/

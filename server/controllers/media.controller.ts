@@ -14,6 +14,6 @@ export const mediaController = {
   async get(req: Request, res: Response) {
     const id = z.string().uuid().parse(req.params.id);
     const media = await authorizedMedia(req.user!, id);
-    res.type(media.mime).sendFile(media.filePath);
+    res.type(media.mime).send(media.bytes);
   },
 };

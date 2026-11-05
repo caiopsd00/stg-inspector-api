@@ -1,0 +1,6 @@
+services:
+  api:
+    environment:
+      GOOGLE_APPLICATION_CREDENTIALS: /run/secrets/gcs-credentials.json
+    volumes:
+      - ${GCS_CREDENTIALS_PATH:?Defina o caminho absoluto da credencial}:/run/secrets/gcs-credentials.json:ro

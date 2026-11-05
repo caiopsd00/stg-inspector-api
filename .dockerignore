@@ -9,3 +9,17 @@ dist
 legacy
 images
 assets
+credentials
+secrets
+*credentials*.json
+*service-account*.json
+*service_account*.json
+*.pem
+*.key
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.dump
+backups
+.brlift-backups

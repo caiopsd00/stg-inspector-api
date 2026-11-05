@@ -1,21 +1,22 @@
 import type { Entry } from "../../contracts/domain.js";
 import { documentForRecord } from "../documents.js";
-import { fail } from "../relational-utils.js";
-import { storageDir } from "../storage.js";
+import { getObjectStorage } from "../object-storage/index.js";
+import { concurrencySetting, createConcurrencyLimit } from "../concurrency.js";
 
-export function createDocumentService() {
-  let activeDocuments = 0;
-  return async (item: Entry, format: "pdf" | "docx") => {
-    if (activeDocuments >= 2)
-      throw fail(
-        429,
-        "Há outros documentos em geração. Aguarde e tente novamente.",
-      );
-    activeDocuments++;
-    try {
-      return await documentForRecord(item, format, storageDir);
-    } finally {
-      activeDocuments--;
-    }
-  };
+type GenerateDocument = (
+  item: Entry,
+  format: "pdf" | "docx",
+) => Promise<Buffer>;
+
+export function createDocumentService(
+  generate: GenerateDocument = (item, format) =>
+    documentForRecord(item, format, getObjectStorage()),
+  limit = concurrencySetting("DOCUMENT_CONCURRENCY"),
+) {
+  const run = createConcurrencyLimit(
+    limit,
+    "Há outro documento em geração. Aguarde e tente novamente.",
+  );
+  return (item: Entry, format: "pdf" | "docx") =>
+    run(() => generate(item, format));
 }

@@ -16,7 +16,7 @@ export const catalogInput = z.object({
   name: z.string().trim().min(1).max(300),
   identifier: z.string().optional().nullable(),
   clientId: idSchema.optional().nullable(),
-  data: z.record(z.unknown()).default({}),
+  data: z.record(z.string(), z.unknown()).default({}),
   baseVersion: z.number().int().min(0).default(0),
   mutationId: idSchema.optional(),
 });
@@ -27,12 +27,12 @@ export const recordInput = z.object({
   equipmentId: idSchema.nullable(),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   status: z.enum(["draft", "finalized"]),
-  payload: z.record(z.any()),
+  payload: z.record(z.string(), z.any()),
   baseVersion: z.number().int().min(0),
   mutationId: idSchema,
 });
 export const loginInput = z.object({
-  email: z.string().email(),
+  email: z.string().email().max(320),
   password: z.string().min(1).max(1024),
 });
 export const archiveCatalogInput = z.object({
@@ -100,7 +100,7 @@ export const reportSchema = z.object({
       }),
     )
     .optional(),
-  equipment: z.record(z.string().max(1000)),
+  equipment: z.record(z.string(), z.string().max(1000)),
   reasons: z
     .array(
       z.object({
@@ -199,9 +199,9 @@ export const inspectionSchema = z.object({
   createdAt: z.string().optional(),
   updatedAt: z.string().optional(),
   finalizedAt: z.string().nullable().optional(),
-  documentFields: z.record(text),
+  documentFields: z.record(z.string(), text),
   approvedByTechnicianId: z.string().nullable().optional(),
-  documentImages: z.record(z.array(media).max(50)),
+  documentImages: z.record(z.string(), z.array(media).max(50)),
   sections: z
     .array(
       z.object({

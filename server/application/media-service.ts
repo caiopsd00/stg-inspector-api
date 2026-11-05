@@ -1,8 +1,4 @@
 import crypto from "node:crypto";
-import fs from "node:fs/promises";
-import path from "node:path";
-
-import sharp from "sharp";
 
 import type { User } from "../auth.js";
 import { sha } from "../auth.js";
@@ -13,7 +9,15 @@ import {
   mediaByOwnerAndHash,
   type MediaAccessRow,
 } from "../repositories/media-repository.js";
-import { storageDir } from "../storage.js";
+import { getObjectStorage, mediaStorageKey } from "../object-storage/index.js";
+import { StorageNotFoundError } from "../object-storage/types.js";
+import { prepareMediaImage } from "./media-image.js";
+import { concurrencySetting, createConcurrencyLimit } from "../concurrency.js";
+
+const runUpload = createConcurrencyLimit(
+  concurrencySetting("MEDIA_UPLOAD_CONCURRENCY"),
+  "Há outra imagem em processamento. Aguarde e tente novamente.",
+);
 
 function canAccessMedia(user: User, row: MediaAccessRow | undefined): boolean {
   return Boolean(
@@ -49,54 +53,31 @@ export async function validateMediaReferences(
   }
 }
 
-export async function uploadMedia(user: User, dataUrl: string, name: string) {
-  const match =
-    /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=\r\n]+)$/.exec(
-      dataUrl,
-    );
-  if (!match) throw fail(422, "Use PNG, JPEG ou WebP.");
-  const source = Buffer.from(match[2], "base64");
-  if (source.length > 10 * 1024 * 1024)
-    throw fail(422, "Imagem maior que 10 MB.");
-  let bytes: Buffer;
-  try {
-    bytes = await sharp(source, {
-      limitInputPixels: 40000000,
-      failOn: "warning",
-    })
-      .rotate()
-      .png()
-      .toBuffer();
-  } catch {
-    throw fail(422, "Imagem inválida ou excede 40 megapixels.");
-  }
-  const valid = bytes
-    .subarray(0, 8)
-    .equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
-  if (!valid || bytes.length > 10 * 1024 * 1024)
-    throw fail(422, "Imagem inválida ou maior que 10 MB.");
+export function uploadMedia(user: User, dataUrl: string, name: string) {
+  return runUpload(() => storeMedia(user, dataUrl, name));
+}
+
+async function storeMedia(user: User, dataUrl: string, name: string) {
+  const { bytes, mime, width, height } = await prepareMediaImage(dataUrl);
   const hash = sha(bytes);
-  const dimensions = await sharp(bytes).metadata();
   let old = await mediaByOwnerAndHash(user.id, hash);
   let id = old?.id;
   if (!id) {
     id = crypto.randomUUID();
-    const mediaDir = path.join(storageDir, "media");
-    const filePath = path.join(mediaDir, id);
-    await fs.mkdir(mediaDir, { recursive: true });
-    await fs.writeFile(filePath, bytes, {
-      flag: "wx",
-    });
+    const key = mediaStorageKey(id);
+    const storage = getObjectStorage();
+    await storage.save(key, bytes, mime);
     let inserted = false;
     try {
       await insertMediaMetadata({
         id,
         hash,
         size: bytes.length,
+        mime,
         userId: user.id,
         name,
-        width: dimensions.width,
-        height: dimensions.height,
+        width,
+        height,
       });
       inserted = true;
     } catch (error) {
@@ -110,15 +91,15 @@ export async function uploadMedia(user: User, dataUrl: string, name: string) {
       if (!old) throw error;
       id = old.id;
     } finally {
-      if (!inserted) await fs.rm(filePath, { force: true });
+      if (!inserted) await storage.delete(key);
     }
   }
   return {
     id,
     uri: "/api/media/" + id,
     name,
-    width: dimensions.width,
-    height: dimensions.height,
+    width,
+    height,
     createdAt: old?.created_at || new Date().toISOString(),
   };
 }
@@ -127,8 +108,16 @@ export async function authorizedMedia(user: User, id: string) {
   const row = await mediaAccessRow(id, user.id);
   if (!row || !canAccessMedia(user, row))
     throw fail(404, "Arquivo não encontrado.");
+  let bytes: Buffer;
+  try {
+    bytes = await getObjectStorage().read(row.storage_key);
+  } catch (error) {
+    if (error instanceof StorageNotFoundError)
+      throw fail(404, "Arquivo não encontrado.");
+    throw error;
+  }
   return {
     mime: row.mime as string,
-    filePath: path.join(storageDir, "media", id),
+    bytes,
   };
 }
