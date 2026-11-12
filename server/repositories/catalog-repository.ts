@@ -1,7 +1,10 @@
 import type { Catalog, CatalogKind } from "../../contracts/domain.js";
 import {
   canonicalDocument,
+  equipmentLabel,
+  isTechnician,
   permanentEquipment,
+  validateEquipment,
 } from "../../contracts/domain.js";
 import {
   type DB,
@@ -18,6 +21,8 @@ export const catalogTables = {
   technicians: "technicians",
   equipment: "equipment",
   parts: "parts",
+  vehicles: "vehicles",
+  rentalCompanies: "rental_companies",
 } as const;
 export async function catalogItems(
   db: DB,
@@ -26,7 +31,11 @@ export async function catalogItems(
 ): Promise<Catalog[]> {
   const rows = (
     await db.query(
-      `SELECT * FROM ${catalogTables[kind]} WHERE ($1::text IS NULL OR id=$1) AND (NOT $2::boolean OR active) ORDER BY name`,
+      `SELECT c.*${kind === "vehicles" ? ", rental.name AS rental_company_name" : ""}
+       FROM ${catalogTables[kind]} c
+       ${kind === "vehicles" ? "LEFT JOIN rental_companies rental ON rental.id=c.rental_company_id" : ""}
+       WHERE ($1::text IS NULL OR c.id=$1) AND (NOT $2::boolean OR c.active)
+       ORDER BY c.${kind === "vehicles" ? "plate" : "name"}`,
       [options.id, !!options.activeOnly],
     )
   ).rows;
@@ -42,8 +51,14 @@ export async function catalogItems(
   return rows.map((r: any) => ({
     id: r.id,
     kind,
-    name: r.name,
-    identifier: r.cnpj || r.cpf || r.code || null,
+    name:
+      kind === "equipment"
+        ? equipmentLabel(r, r.name)
+        : kind === "vehicles"
+          ? r.plate
+          : r.name,
+    identifier:
+      r.cnpj || r.cpf || r.code || (kind === "vehicles" ? r.plate : null),
     clientId: r.client_id || null,
     active: r.active,
     version: r.version,
@@ -66,9 +81,16 @@ export async function catalogItems(
                 .filter((c: any) => c.part_id === r.id && c.code !== r.code)
                 .map((c: any) => c.code),
             }
-          : kind === "technicians"
-            ? { userId: r.user_id }
-            : {},
+          : kind === "vehicles"
+            ? {
+                rentalCompanyId: r.rental_company_id,
+                rentalCompanyName: r.rental_company_name,
+                model: r.model,
+                color: r.color,
+              }
+            : kind === "technicians"
+              ? { userId: r.user_id }
+              : {},
   }));
 }
 export async function reference(
@@ -110,16 +132,30 @@ export async function saveCatalog(
     throw fail(409, "Cadastro alterado. Recarregue antes de editar.");
   let identifier: string | null = null;
   try {
-    if (kind !== "equipment")
+    if (kind !== "equipment" && kind !== "rentalCompanies")
       identifier = canonicalDocument(kind, input.identifier || "");
   } catch (e: any) {
     throw fail(422, e.message);
   }
   const data: Record<string, unknown> = { id, name: input.name, active: true };
+  if (kind !== "equipment" && kind !== "vehicles" && !input.name.trim())
+    throw fail(422, "Informe o nome.");
   if (kind === "clients") data.cnpj = identifier;
   if (kind === "technicians") {
+    const linkedUser = before?.data.userId || null;
+    if (input.data?.userId && input.data.userId !== linkedUser)
+      throw fail(422, "Vincule o cadastro técnico pela tela de usuários.");
+    if (linkedUser) {
+      const user = (
+        await db.query("SELECT role,active FROM users WHERE id=$1", [
+          linkedUser,
+        ])
+      ).rows[0];
+      if (!user?.active || !isTechnician(user.role))
+        throw fail(422, "O usuário vinculado não possui perfil técnico ativo.");
+    }
     data.cpf = identifier;
-    data.user_id = nullable(input.data?.userId);
+    data.user_id = linkedUser;
   }
   if (kind === "equipment") {
     if (!input.clientId) throw fail(422, "Vincule o equipamento a um cliente.");
@@ -130,7 +166,13 @@ export async function saveCatalog(
       before?.clientId === input.clientId,
     );
     const p = permanentEquipment(input.data);
+    try {
+      validateEquipment(p);
+    } catch (error) {
+      throw fail(422, (error as Error).message);
+    }
     Object.assign(data, {
+      name: equipmentLabel(p),
       client_id: input.clientId,
       type: p.type,
       brand: p.brand,
@@ -145,6 +187,32 @@ export async function saveCatalog(
       manufacture_year: year(p.year),
       ...textNAColumns("plate", p.plate),
       ...textNAColumns("fleet", p.fleet),
+    });
+  }
+  if (kind === "vehicles") {
+    const rentalId = input.data?.rentalCompanyId;
+    if (typeof rentalId !== "string" || !rentalId)
+      throw fail(422, "Selecione a locadora do veículo.");
+    await reference(
+      db,
+      rentalId,
+      "rentalCompanies",
+      before?.data.rentalCompanyId === rentalId,
+    );
+    const { model = "", color = "" } = input.data;
+    if (
+      typeof model !== "string" ||
+      model.length > 300 ||
+      typeof color !== "string" ||
+      color.length > 300
+    )
+      throw fail(422, "Modelo ou cor do veículo inválidos.");
+    delete data.name;
+    Object.assign(data, {
+      rental_company_id: rentalId,
+      plate: identifier,
+      model: model.trim(),
+      color: color.trim(),
     });
   }
   if (kind === "parts") {

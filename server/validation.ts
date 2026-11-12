@@ -1,19 +1,15 @@
 import { z } from "zod";
+import { catalogKinds as catalogKindValues } from "../contracts/domain.js";
 export const idSchema = z
   .string()
   .min(1)
   .max(140)
   .regex(/^[A-Za-z0-9_-]+$/);
 export const kinds = z.enum(["reports", "inspections"]);
-export const catalogKinds = z.enum([
-  "clients",
-  "technicians",
-  "equipment",
-  "parts",
-]);
+export const catalogKinds = z.enum(catalogKindValues);
 export const catalogInput = z.object({
   id: idSchema,
-  name: z.string().trim().min(1).max(300),
+  name: z.string().trim().max(300).default(""),
   identifier: z.string().optional().nullable(),
   clientId: idSchema.optional().nullable(),
   data: z.record(z.string(), z.unknown()).default({}),
@@ -25,7 +21,11 @@ export const recordInput = z.object({
   clientId: idSchema.nullable(),
   technicianId: idSchema.nullable(),
   equipmentId: idSchema.nullable(),
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  vehicleId: idSchema.nullable().optional(),
+  date: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional(),
   status: z.enum(["draft", "finalized"]),
   payload: z.record(z.string(), z.any()),
   baseVersion: z.number().int().min(0),
@@ -42,6 +42,18 @@ export const archiveCatalogInput = z.object({
 export const mediaInput = z.object({
   dataUrl: z.string(),
   name: z.string().max(300).default("imagem"),
+  signature: z
+    .object({
+      kind: kinds,
+      recordId: idSchema,
+      signerRole: z.enum(["technician", "client"]),
+      signerName: z
+        .string()
+        .trim()
+        .min(1, "Informe o nome de quem assinou.")
+        .max(300),
+    })
+    .optional(),
 });
 export const recordFilter = z.object({
   from: z
@@ -65,9 +77,12 @@ const media = z.object({
   width: z.number().optional(),
   height: z.number().optional(),
   createdAt: z.string().datetime({ offset: true }).optional(),
+  captureId: z.uuid().optional(),
+  signerName: z.string().max(300).optional(),
 });
 const period = z.object({ start: z.string().max(5), end: z.string().max(5) });
-const participantPeriods = z
+const yesNo = z.enum(["", "Sim", "Não"]);
+const schedulePeriods = z
   .array(
     z.object({
       id: z.string().min(1).max(140),
@@ -75,6 +90,8 @@ const participantPeriods = z
       start: z.string().max(5),
       end: z.string().max(5),
       pauseMinutes: z.string().max(30),
+      odometerStart: z.string().max(30).optional(),
+      odometerEnd: z.string().max(30).optional(),
     }),
   )
   .max(1000)
@@ -82,8 +99,28 @@ const participantPeriods = z
     (items) => new Set(items.map((x) => x.id)).size === items.length,
     "Períodos com identificadores repetidos.",
   );
+const scheduleDay = z.object({
+  id: z.string().min(1).max(140),
+  date: z.string().date(),
+  notes: text.optional(),
+  odometerStart: z.string(),
+  odometerEnd: z.string(),
+  hourmeter: z.string(),
+  hourmeterLower: z.string().optional(),
+  hourmeterUpper: z.string().optional(),
+  outbound: period,
+  work: period,
+  inbound: period,
+  pause: z.object({
+    period: z.enum(["work", "outbound", "inbound"]),
+    minutes: z.string(),
+  }),
+  periods: schedulePeriods.optional(),
+});
 export const reportSchema = z.object({
-  type: z.enum(["interno", "externo"]),
+  formRevision: z.literal(2).optional(),
+  primaryTechnicianCharged: yesNo.optional(),
+  type: z.enum(["interno", "externo", "remoto"]),
   operator: text,
   requester: text,
   location: text,
@@ -97,6 +134,7 @@ export const reportSchema = z.object({
           .max(140)
           .regex(/^[A-Za-z0-9_-]+$/),
         role: z.enum(["technician", "auxiliary"]),
+        charged: yesNo.optional(),
       }),
     )
     .optional(),
@@ -113,7 +151,8 @@ export const reportSchema = z.object({
               id: z.string(),
               description: text,
               notes: text,
-              photos: z.array(media).max(50),
+              photos: z.array(media).max(5000),
+              completed: yesNo.optional(),
             }),
           )
           .max(100),
@@ -136,10 +175,7 @@ export const reportSchema = z.object({
     .max(1000),
   days: z
     .array(
-      z.object({
-        id: z.string(),
-        date: z.string().date(),
-        notes: text.optional(),
+      scheduleDay.extend({
         participants: z
           .array(
             z.object({
@@ -149,51 +185,24 @@ export const reportSchema = z.object({
               odometerEnd: z.string().max(30),
               sameHoursAs: z.string().min(1).max(140).nullable(),
               sameVehicleAs: z.string().min(1).max(140).nullable(),
-              periods: participantPeriods,
+              periods: schedulePeriods,
             }),
           )
           .max(1000)
-          .optional(),
-        odometerStart: z.string(),
-        odometerEnd: z.string(),
-        hourmeter: z.string(),
-        hourmeterLower: z.string().optional(),
-        hourmeterUpper: z.string().optional(),
-        outbound: period,
-        work: period,
-        inbound: period,
-        pause: z.object({
-          period: z.enum(["work", "outbound", "inbound"]),
-          minutes: z.string(),
-        }),
-        periods: z
-          .array(
-            z.object({
-              id: z.string().min(1).max(140),
-              kind: z.enum(["outbound", "work", "inbound"]),
-              start: z.string().max(5),
-              end: z.string().max(5),
-              pauseMinutes: z.string().max(30),
-            }),
-          )
-          .max(1000)
-          .refine(
-            (periods) =>
-              new Set(periods.map((p) => p.id)).size === periods.length,
-            "Períodos com identificadores repetidos.",
-          )
           .optional(),
       }),
     )
     .max(365),
   concluded: z.enum(["", "Sim", "Não"]),
   released: z.enum(["", "Sim", "Não"]),
-  photosSent: z.enum(["", "Sim", "Não"]),
+  photosSent: yesNo.default(""),
   observations: text,
   technicianSignature: media.optional(),
   clientSignature: media.optional(),
 });
 export const inspectionSchema = z.object({
+  formRevision: z.literal(2).optional(),
+  days: z.array(scheduleDay).max(365).optional(),
   id: z.string().optional(),
   name: z.string().max(300).optional(),
   createdAt: z.string().optional(),

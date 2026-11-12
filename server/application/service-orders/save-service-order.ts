@@ -16,7 +16,10 @@ export function saveServiceOrderEntry(
   input: z.infer<typeof recordInput>,
   user: User,
 ) {
-  if (!z.string().date().safeParse(input.date).success)
+  if (
+    input.payload.formRevision !== 2 &&
+    !z.string().date().safeParse(input.date).success
+  )
     throw fail(422, "Data inválida.");
   try {
     validateReportTeam(input);

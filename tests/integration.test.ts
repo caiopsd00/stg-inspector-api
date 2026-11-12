@@ -45,14 +45,14 @@ test(
     const userCpf = tag.replace(/\D/g, "").padEnd(11, "0").slice(0, 11);
     await assert.rejects(
       pool.query(
-        "INSERT INTO users(id,email,name,password_hash,role) VALUES($1,$2,'Sem técnico',$3,'admin')",
+        "INSERT INTO users(id,email,name,password_hash,role) VALUES($1,$2,'Sem técnico',$3,'technician_admin')",
         [crypto.randomUUID(), "orphan-" + tag + "@example.test", "hash"],
       ),
       /precisa ter um cadastro de técnico vinculado/,
     );
     await transaction(async (db) => {
       await db.query(
-        "INSERT INTO users(id,email,name,password_hash,role) VALUES($1,$2,'Usuário de teste',$3,'admin')",
+        "INSERT INTO users(id,email,name,password_hash,role) VALUES($1,$2,'Usuário de teste',$3,'technician_admin')",
         [tag, email, await hashPassword(password)],
       );
       await db.query(
@@ -81,7 +81,7 @@ test(
         },
         body: body === undefined ? undefined : JSON.stringify(body),
       });
-      const value = await res.json();
+      const value = res.status === 204 ? null : await res.json();
       assert.equal(res.status, expected, JSON.stringify(value));
       return value;
     }
@@ -121,7 +121,7 @@ test(
           name: "Usuário atualizado " + tag,
           email,
           cpf: editedCpf,
-          role: "admin",
+          role: "technician_admin",
         },
         "PUT",
       );
@@ -131,6 +131,65 @@ test(
         "Usuário atualizado " + tag,
       );
       await call(`/api/users/${tag}/active`, { active: false }, "PUT", 409);
+      await scenario(
+        "administrador puro não é técnico; promoção e rebaixamento preservam o vínculo histórico",
+        async () => {
+          const pureEmail = "pure-" + tag + "@example.test";
+          const body = {
+            name: "ADMIN QA",
+            email: pureEmail,
+            role: "admin",
+            password: registeredPassword,
+          };
+          const pure = await call("/api/users", body, "POST", 201);
+          assert.equal(pure.technician, null);
+          const id = pure.user.id;
+          const cpf = String(
+            (BigInt(userCpf) + 4n) % 100_000_000_000n,
+          ).padStart(11, "0");
+          const promoted = await call(
+            `/api/users/${id}`,
+            { ...body, role: "technician_admin", cpf },
+            "PUT",
+          );
+          assert.equal(promoted.technician.identifier, cpf);
+          assert.equal(
+            (await call("/api/catalog/technicians")).items.find(
+              (item: any) => item.id === promoted.technician.id,
+            )?.active,
+            true,
+          );
+          const demoted = await call(`/api/users/${id}`, body, "PUT");
+          assert.equal(demoted.technician, null);
+          assert.ok(
+            !(await call("/api/catalog/technicians")).items.some(
+              (item: any) => item.id === promoted.technician.id,
+            ),
+          );
+          const history = (
+            await pool.query("SELECT cpf,active FROM technicians WHERE id=$1", [
+              promoted.technician.id,
+            ])
+          ).rows[0];
+          assert.deepEqual(history, { cpf, active: false });
+          const previous = token;
+          try {
+            token = (
+              await call("/api/auth/login", {
+                email: pureEmail,
+                password: registeredPassword,
+              })
+            ).token;
+            assert.ok(
+              (await call("/api/users")).users.some(
+                (user: any) => user.id === id && user.technician === null,
+              ),
+            );
+          } finally {
+            token = previous;
+          }
+        },
+      );
       const technician = (await call("/api/catalog/technicians")).items.find(
         (item: any) => item.id === registered.technician.id,
       );
@@ -488,6 +547,251 @@ test(
           mutationId: crypto.randomUUID(),
         };
       const first = await call("/api/reports/" + id, input, "PUT");
+      const rentalId = crypto.randomUUID(),
+        vehicleId = crypto.randomUUID();
+      const uploadSignature = async (
+        kind: string,
+        recordId: string,
+        signerRole: string,
+        signerName: string,
+      ) =>
+        (
+          await call(
+            "/api/media",
+            {
+              dataUrl,
+              name: "assinatura.png",
+              signature: { kind, recordId, signerRole, signerName },
+            },
+            "POST",
+            201,
+          )
+        ).media;
+      await scenario(
+        "relatório atualizado persiste veículo, cobrança, serviço, KM por período e assinatura independente",
+        async () => {
+          const rental = { name: "LOCADORA QA " + tag, baseVersion: 0 };
+          await call("/api/catalog/rentalCompanies/" + rentalId, rental, "PUT");
+          await call(
+            "/api/catalog/rentalCompanies/" + crypto.randomUUID(),
+            { ...rental, name: rental.name.toLowerCase() },
+            "PUT",
+            409,
+          );
+          const vehicle = {
+            identifier: "QA-" + tag.slice(0, 8),
+            baseVersion: 0,
+            data: { rentalCompanyId: rentalId },
+          };
+          await call(
+            "/api/catalog/vehicles/" + vehicleId,
+            { ...vehicle, data: {} },
+            "PUT",
+            422,
+          );
+          const savedVehicle = (
+            await call("/api/catalog/vehicles/" + vehicleId, vehicle, "PUT")
+          ).item;
+          assert.equal(
+            savedVehicle.name,
+            ("QA" + tag.slice(0, 8)).toUpperCase(),
+          );
+          assert.equal(savedVehicle.data.model, "");
+          assert.equal(savedVehicle.data.color, "");
+
+          const recordId = crypto.randomUUID();
+          const url = "/api/reports/" + recordId;
+          await call(url + "/filling-start", {}, "POST", 204);
+          const startQuery = async () =>
+            (
+              await pool.query(
+                "SELECT started_at FROM record_fill_starts WHERE record_id=$1",
+                [recordId],
+              )
+            ).rows[0]?.started_at;
+          const started = await startQuery();
+          await call(url + "/filling-start", {}, "POST", 204);
+          assert.deepEqual(await startQuery(), started);
+          const signTech = await uploadSignature(
+            "reports",
+            recordId,
+            "technician",
+            "TÉCNICO QA",
+          );
+          const signClient = await uploadSignature(
+            "reports",
+            recordId,
+            "client",
+            "CLIENTE QA",
+          );
+          const resignTech = await uploadSignature(
+            "reports",
+            recordId,
+            "technician",
+            "TÉCNICO QA REASSINOU",
+          );
+          assert.equal(signTech.uri, resignTech.uri);
+          assert.notEqual(signTech.captureId, resignTech.captureId);
+          assert.ok(resignTech.createdAt > signTech.createdAt);
+
+          const revised = {
+            ...structuredClone(p),
+            formRevision: 2,
+            type: "remoto",
+            primaryTechnicianCharged: "Não",
+            photosSent: undefined,
+            additionalTechnicians: p.additionalTechnicians!.map((member) => ({
+              ...member,
+              charged: "Sim",
+            })),
+            technicianSignature: {
+              ...resignTech,
+              signerName: "NOME INJETADO",
+              createdAt: "2000-01-01T00:00:00Z",
+            },
+            clientSignature: signClient,
+            reasons: p.reasons.map((reason) => ({
+              ...reason,
+              services: reason.services.map((service) => ({
+                ...service,
+                completed: "Sim",
+              })),
+            })),
+            days: [
+              {
+                ...newDay("remote-day"),
+                periods: [
+                  {
+                    id: "remote-work",
+                    kind: "work",
+                    start: "08:00",
+                    end: "10:00",
+                    pauseMinutes: "0",
+                    odometerStart: "0",
+                    odometerEnd: "N/A",
+                  },
+                ],
+              },
+            ],
+          };
+          const body = {
+            ...input,
+            date: undefined,
+            vehicleId,
+            number: "OMIE-" + tag,
+            payload: revised,
+          };
+          const save = (payload: any, status = "finalized", expected = 200) =>
+            call(
+              url,
+              {
+                ...body,
+                payload,
+                status,
+                mutationId: crypto.randomUUID(),
+              },
+              "PUT",
+              expected,
+            );
+          await save(
+            { ...revised, primaryTechnicianCharged: "" },
+            "finalized",
+            422,
+          );
+          await save(
+            { ...revised, reasons: [{ ...revised.reasons[0], services: [] }] },
+            "draft",
+            422,
+          );
+          await save(
+            { ...revised, technicianSignature: signClient },
+            "finalized",
+            422,
+          );
+          const noKm = structuredClone(revised);
+          noKm.days[0].periods[0].odometerEnd = "";
+          await save(noKm, "finalized", 422);
+          const travel = structuredClone(revised);
+          travel.days[0].periods[0].kind = "outbound";
+          await save(travel, "finalized", 422);
+          assert.deepEqual(
+            await startQuery(),
+            started,
+            "Falha não consome o início do preenchimento",
+          );
+          const saved = (await save(revised, "draft")).item;
+          assert.equal(saved.vehicleId, vehicleId);
+          assert.equal(
+            saved.payload.vehicleSnapshot.rentalCompany,
+            rental.name,
+          );
+          assert.equal(saved.payload.primaryTechnicianCharged, "Não");
+          assert.equal(saved.payload.additionalTechnicians[0].charged, "Sim");
+          assert.equal(saved.payload.reasons[0].services[0].completed, "Sim");
+          assert.equal(saved.payload.days[0].periods[0].odometerStart, "0");
+          assert.equal(saved.payload.days[0].periods[0].odometerEnd, "N/A");
+          assert.equal(
+            saved.payload.technicianSignature.signerName,
+            resignTech.signerName,
+          );
+          assert.equal(
+            saved.payload.technicianSignature.createdAt,
+            resignTech.createdAt,
+          );
+          assert.equal(
+            saved.payload.clientSignature.createdAt,
+            signClient.createdAt,
+          );
+          assert.equal(await startQuery(), undefined);
+          const timestamps = async () =>
+            (
+              await pool.query(
+                "SELECT filling_started_at,created_at,updated_at FROM service_orders WHERE id=$1",
+                [recordId],
+              )
+            ).rows[0];
+          const before = await timestamps();
+          assert.deepEqual(before.filling_started_at, started);
+          assert.ok(before.created_at >= before.filling_started_at);
+          assert.ok(!("fillingStartedAt" in saved));
+          const finish = {
+            ...body,
+            baseVersion: 1,
+            mutationId: crypto.randomUUID(),
+          };
+          await call(
+            url,
+            {
+              ...finish,
+              date: input.date,
+              payload: { ...revised, formRevision: undefined },
+            },
+            "PUT",
+            428,
+          );
+          const finalized = (await call(url, finish, "PUT")).item;
+          assert.equal(finalized.status, "finalized");
+          assert.equal(finalized.date, saved.date);
+          const after = await timestamps();
+          assert.deepEqual(after.created_at, before.created_at);
+          assert.deepEqual(after.filling_started_at, before.filling_started_at);
+          assert.ok(after.updated_at > before.updated_at);
+          const pdf = await fetch(base + url + "/document/pdf", {
+            headers: { Authorization: "Bearer " + token },
+          });
+          assert.equal(pdf.status, 200);
+          assert.match(
+            pdf.headers.get("content-disposition")!,
+            new RegExp("Cliente-teste-" + tag + "-OMIE-" + tag + "\\.pdf"),
+          );
+          assert.equal(
+            Buffer.from(await pdf.arrayBuffer())
+              .subarray(0, 4)
+              .toString(),
+            "%PDF",
+          );
+        },
+      );
       // Independent schedules, linked hours and carpooling must survive a real save/reload.
       const peopleId = crypto.randomUUID();
       const personDay = {
@@ -816,6 +1120,142 @@ test(
         sections,
         signature: media,
       };
+      await scenario(
+        "inspeção atualizada persiste cronograma de um técnico e as três leituras",
+        async () => {
+          const recordId = crypto.randomUUID();
+          const url = "/api/inspections/" + recordId;
+          await call(url + "/filling-start", {}, "POST", 204);
+          const payload = {
+            ...structuredClone(insp),
+            id: recordId,
+            signature: undefined,
+            formRevision: 2,
+            technicianSignature: await uploadSignature(
+              "inspections",
+              recordId,
+              "technician",
+              "INSPETOR QA",
+            ),
+            clientSignature: await uploadSignature(
+              "inspections",
+              recordId,
+              "client",
+              "CLIENTE DA INSPEÇÃO",
+            ),
+            documentFields: {
+              ...insp.documentFields,
+              "011": "Rejeitada",
+              "006": "0",
+              hourmeterUpper: "N/A",
+              "007": "101",
+              equipmentBrand: "MARCA HISTÓRICA",
+              equipmentPlate: "XYZ9A87",
+              equipmentFleet: "FROTA-42",
+            },
+            approvedByTechnicianId: tech2,
+            days: [
+              {
+                ...newDay("inspection-day"),
+                notes: "FISCALIZAÇÃO EM CAMPO",
+                periods: [
+                  {
+                    id: "inspection-travel",
+                    kind: "outbound",
+                    start: "07:00",
+                    end: "08:00",
+                    pauseMinutes: "",
+                    odometerStart: "80",
+                    odometerEnd: "101",
+                  },
+                  {
+                    id: "inspection-work",
+                    kind: "work",
+                    start: "08:00",
+                    end: "10:00",
+                    pauseMinutes: "10",
+                    odometerStart: "N/A",
+                    odometerEnd: "N/A",
+                  },
+                ],
+              },
+            ],
+          };
+          const body = {
+            ...input,
+            date: undefined,
+            vehicleId,
+            number: "IN-OMIE-" + tag,
+            payload,
+            mutationId: crypto.randomUUID(),
+          };
+          const missingKm = structuredClone(body);
+          missingKm.payload.days[0].periods[0].odometerStart = "";
+          await call(url, missingKm, "PUT", 422);
+          const saved = (await call(url, body, "PUT")).item;
+          const reloaded = (await call(url)).item;
+          assert.deepEqual(reloaded, saved);
+          assert.equal(reloaded.payload.days[0].participants, undefined);
+          assert.deepEqual(dayTotals(reloaded.payload.days[0]), {
+            work: 110,
+            travel: 60,
+            km: 21,
+          });
+          assert.equal(reloaded.payload.documentFields.hourmeterUpper, "N/A");
+          assert.equal(reloaded.payload.documentFields["006"], "0");
+          assert.equal(reloaded.payload.documentFields["007"], "101");
+          assert.equal(reloaded.payload.documentFields["011"], "Rejeitada");
+          assert.equal(
+            reloaded.payload.documentFields.equipmentBrand,
+            "MARCA HISTÓRICA",
+          );
+          assert.equal(
+            reloaded.payload.documentFields.equipmentPlate,
+            "XYZ9A87",
+          );
+          assert.equal(
+            reloaded.payload.documentFields.equipmentFleet,
+            "FROTA-42",
+          );
+          const compatiblePayload = structuredClone(reloaded.payload);
+          for (const key of [
+            "equipmentBrand",
+            "equipmentPlate",
+            "equipmentFleet",
+          ])
+            delete compatiblePayload.documentFields[key];
+          const compatibleSave = (
+            await call(
+              url,
+              {
+                ...body,
+                payload: compatiblePayload,
+                baseVersion: reloaded.version,
+                mutationId: crypto.randomUUID(),
+              },
+              "PUT",
+            )
+          ).item;
+          for (const key of [
+            "equipmentBrand",
+            "equipmentPlate",
+            "equipmentFleet",
+          ])
+            assert.equal(
+              compatibleSave.payload.documentFields[key],
+              reloaded.payload.documentFields[key],
+            );
+          assert.equal(reloaded.payload.approvedByTechnicianId, tech2);
+          assert.equal(
+            reloaded.payload.technicianSignature.signerName,
+            "INSPETOR QA",
+          );
+          assert.equal(
+            reloaded.payload.clientSignature.signerName,
+            "CLIENTE DA INSPEÇÃO",
+          );
+        },
+      );
       const extraSlot = sections
         .flatMap((s) => s.items)
         .find((i) => i.extraImageSlots?.length)?.extraImageSlots?.[0];

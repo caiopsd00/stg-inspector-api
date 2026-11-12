@@ -1,5 +1,32 @@
 export type Kind = "reports" | "inspections";
-export type CatalogKind = "clients" | "technicians" | "equipment" | "parts";
+export const catalogKinds = [
+  "clients",
+  "technicians",
+  "equipment",
+  "parts",
+  "vehicles",
+  "rentalCompanies",
+] as const;
+export type CatalogKind = (typeof catalogKinds)[number];
+export const userRoles = ["admin", "technician", "technician_admin"] as const;
+export type UserRole = (typeof userRoles)[number];
+export const canAdminister = (role?: string) =>
+  role === "admin" || role === "technician_admin";
+export const isTechnician = (role?: string) =>
+  role === "technician" || role === "technician_admin";
+export const userRoleLabels: Record<UserRole, string> = {
+  admin: "Administrador",
+  technician: "Técnico",
+  technician_admin: "Técnico + ADM",
+};
+export type YesNo = "" | "Sim" | "Não";
+export type SignerRole = "technician" | "client";
+export type SignatureTarget = {
+  kind: Kind;
+  recordId: string;
+  signerRole: SignerRole;
+  signerName: string;
+};
 export type Media = {
   id?: string;
   uri: string;
@@ -7,6 +34,8 @@ export type Media = {
   width?: number;
   height?: number;
   createdAt?: string;
+  captureId?: string;
+  signerName?: string;
 };
 export type Catalog = {
   id: string;
@@ -24,6 +53,8 @@ export type DayPeriod = Period & {
   id: string;
   kind: PeriodKind;
   pauseMinutes: string;
+  odometerStart?: string;
+  odometerEnd?: string;
 };
 export const periodLabels: Record<PeriodKind, string> = {
   outbound: "Deslocamento de ida",
@@ -62,6 +93,7 @@ export type Service = {
   description: string;
   notes: string;
   photos: Media[];
+  completed?: YesNo;
 };
 export type Reason = {
   id: string;
@@ -82,8 +114,11 @@ export type Part = {
 export type TeamMember = {
   technicianId: string;
   role: "technician" | "auxiliary";
+  charged?: YesNo;
 };
 export type Report = {
+  formRevision?: 2;
+  primaryTechnicianCharged?: YesNo;
   type: string;
   operator: string;
   requester: string;
@@ -109,6 +144,7 @@ export type Entry = {
   clientId: string | null;
   technicianId: string | null;
   equipmentId: string | null;
+  vehicleId?: string | null;
   clientName?: string;
   technicianName?: string;
   date: string;
@@ -118,6 +154,32 @@ export type Entry = {
   createdAt: string;
   updatedAt: string;
 };
+export function documentFilename(
+  client: string | null | undefined,
+  number: string,
+  format: "pdf" | "docx",
+) {
+  const safe = (value: string, fallback: string) =>
+    value
+      .normalize("NFC")
+      .replace(/[<>:"/\\|?*\u0000-\u001f\u007f]/g, "-")
+      .replace(/\s+/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^[.\-]+|[.\-]+$/g, "")
+      .slice(0, 90) || fallback;
+  return `${safe(client || "", "CLIENTE")}-${safe(number, "OS")}.${format}`;
+}
+
+export function signatureDateTime(value?: string) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("pt-BR", {
+    timeZone: "America/Sao_Paulo",
+    dateStyle: "short",
+    timeStyle: "short",
+  }).format(date);
+}
 export const equipmentFields = [
   ["type", "Tipo"],
   ["brand", "Marca"],
@@ -136,7 +198,20 @@ export function changeEntryClient(
 ): Entry {
   if (clientId === entry.clientId) return entry;
   const documentFields = { ...entry.payload.documentFields };
-  for (const key of ["001", "002", "003", "004", "005", "006", "007", "008"])
+  for (const key of [
+    "001",
+    "002",
+    "003",
+    "004",
+    "005",
+    "006",
+    "007",
+    "008",
+    "hourmeterUpper",
+    "equipmentBrand",
+    "equipmentPlate",
+    "equipmentFleet",
+  ])
     documentFields[key] = "";
   return {
     ...entry,
@@ -163,6 +238,26 @@ export function validateEquipment(data: Record<string, string>) {
     if (!data[key]?.trim())
       throw Error(`Informe ${label.toLowerCase()} do equipamento.`);
 }
+export function equipmentLabel(
+  data: Record<string, unknown> = {},
+  fallback = "",
+) {
+  return (
+    [data.model, data.serial]
+      .filter(
+        (value): value is string => typeof value === "string" && !!value.trim(),
+      )
+      .map((value) => value.trim())
+      .join(" - ") || fallback
+  );
+}
+export const reportTypeLabels: Record<string, string> = {
+  externo: "Externo",
+  interno: "Interno (Galpão BR LIFT)",
+  remoto: "Remoto",
+};
+export const isNonTravelReport = (type: string) =>
+  type === "interno" || type === "remoto";
 export function hasReportTravel(p: Report) {
   return p.days.some((d) =>
     d.participants !== undefined
@@ -188,11 +283,11 @@ export function hasReportTravel(p: Report) {
   );
 }
 export function changeReportType(p: Report, type: string): Report {
-  if (type !== "interno") return { ...p, type };
+  if (!isNonTravelReport(type)) return { ...p, type };
   return {
     ...p,
     type,
-    location: "Galpão BR LIFT",
+    location: type === "remoto" ? "Remoto" : "Galpão BR LIFT",
     days: p.days.map((d) => ({
       ...d,
       odometerStart: "",
@@ -227,7 +322,13 @@ export function reportTeam(
       .filter((id) => id !== entry.technicianId)
       .map((technicianId) => ({ technicianId, role: "auxiliary" as const }));
   return [
-    { technicianId: entry.technicianId || "", role: "technician" },
+    {
+      technicianId: entry.technicianId || "",
+      role: "technician",
+      ...(p.primaryTechnicianCharged !== undefined
+        ? { charged: p.primaryTechnicianCharged }
+        : {}),
+    },
     ...additional,
   ];
 }
@@ -240,6 +341,7 @@ export function withReportTeam<
     technicianId: team[0]?.technicianId || null,
     payload: {
       ...entry.payload,
+      primaryTechnicianCharged: team[0]?.charged,
       days: (entry.payload.days || []).map((day: Day) => {
         if (day.participants === undefined) return day;
         let current = day;
@@ -298,6 +400,31 @@ export function newReport(): Report {
     observations: "",
   };
 }
+export function singleService(reason: Reason): Service {
+  const [first, ...rest] = reason.services;
+  if (!first)
+    return {
+      id: reason.id + "-service",
+      description: "",
+      notes: "",
+      photos: [],
+      completed: "",
+    };
+  if (!rest.length) return first;
+  return {
+    ...first,
+    description: reason.services
+      .map((s) => s.description)
+      .filter(Boolean)
+      .join("\n\n"),
+    notes: reason.services
+      .map((s) => s.notes)
+      .filter(Boolean)
+      .join("\n\n"),
+    photos: reason.services.flatMap((s) => s.photos),
+    completed: "",
+  };
+}
 export function newDay(id: string): Day {
   return {
     id,
@@ -343,7 +470,35 @@ export function dayPeriods(d: Day): DayPeriod[] {
     .filter(hasPeriodData);
 }
 export function hasPeriodData(p: DayPeriod) {
-  return Boolean(p.start || p.end || p.pauseMinutes);
+  return Boolean(
+    p.start || p.end || p.pauseMinutes || p.odometerStart || p.odometerEnd,
+  );
+}
+export function readingIssue(value?: string) {
+  return value &&
+    value !== "N/A" &&
+    (!/^\d+(?:\.\d{1,3})?$/.test(value) || !Number.isFinite(Number(value)))
+    ? "Informe um número não negativo, com até três casas decimais, ou N/A."
+    : "";
+}
+export function periodReadingIssue(period: DayPeriod) {
+  return (
+    readingIssue(period.odometerStart) ||
+    readingIssue(period.odometerEnd) ||
+    (hasNumericReading(period.odometerStart) &&
+    hasNumericReading(period.odometerEnd) &&
+    Number(period.odometerEnd) < Number(period.odometerStart)
+      ? "A leitura final de KM deve ser maior ou igual à inicial."
+      : "")
+  );
+}
+export function periodKm(period: DayPeriod) {
+  const error = periodReadingIssue(period);
+  if (error) throw Error(error);
+  return hasNumericReading(period.odometerStart) &&
+    hasNumericReading(period.odometerEnd)
+    ? Number(period.odometerEnd) - Number(period.odometerStart)
+    : 0;
 }
 export function periodNetMinutes(p: DayPeriod) {
   for (const time of [p.start, p.end])
@@ -390,8 +545,12 @@ export function dayTotals(d: Day): {
       );
   }
   const periods = { outbound: 0, work: 0, inbound: 0 };
-  for (const period of dayPeriods(d))
+  const schedule = dayPeriods(d);
+  let km = 0;
+  for (const period of schedule) {
     periods[period.kind] += periodNetMinutes(period);
+    km += periodKm(period);
+  }
   for (const key of [
     "odometerStart",
     "odometerEnd",
@@ -413,11 +572,61 @@ export function dayTotals(d: Day): {
   return {
     work: periods.work,
     travel: periods.outbound + periods.inbound,
-    km:
-      hasNumericReading(d.odometerStart) && hasNumericReading(d.odometerEnd)
+    km: schedule.some((p) => p.odometerStart || p.odometerEnd)
+      ? km
+      : hasNumericReading(d.odometerStart) && hasNumericReading(d.odometerEnd)
         ? Number(d.odometerEnd) - Number(d.odometerStart)
         : 0,
   };
+}
+export function validateSchedule(
+  days: Day[],
+  finalized: boolean,
+  requirePeriodKm = false,
+) {
+  for (const day of days.filter(hasDayData)) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day.date))
+      throw Error("Informe a data de cada dia preenchido.");
+    dayTotals(day);
+    if (!finalized) continue;
+    const present = day.participants?.filter((person) => person.present);
+    if (present && !present.length)
+      throw Error("Selecione quem trabalhou em cada dia do cronograma.");
+    const timelines = present
+      ? present.map((p) => ({
+          day: participantDay(day, p.technicianId),
+          sharedVehicle: !!p.sameVehicleAs,
+        }))
+      : [{ day, sharedVehicle: false }];
+    for (const timeline of timelines) {
+      const periods = dayPeriods(timeline.day);
+      if (
+        (present || requirePeriodKm) &&
+        !periods.some((p) => p.start && p.end)
+      )
+        throw Error(
+          "Informe os horários de cada profissional presente no dia.",
+        );
+      if (
+        periods.some(
+          (p) =>
+            Boolean(p.start) !== Boolean(p.end) ||
+            (requirePeriodKm && (!p.start || !p.end)),
+        )
+      )
+        throw Error("Complete início e fim de cada período utilizado.");
+      if (
+        requirePeriodKm &&
+        !timeline.sharedVehicle &&
+        periods.some(
+          (p) => p.start && p.end && (!p.odometerStart || !p.odometerEnd),
+        )
+      )
+        throw Error(
+          "Informe KM inicial e final, ou N/A, em cada período utilizado.",
+        );
+    }
+  }
 }
 export function validateReport(p: Report, finalized: boolean) {
   for (const key of [
@@ -439,40 +648,9 @@ export function validateReport(p: Report, finalized: boolean) {
     !Array.isArray(p.days)
   )
     throw new Error("Estrutura do atendimento inválida.");
-  for (const day of p.days.filter(hasDayData)) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(day.date))
-      throw new Error("Informe a data de cada dia preenchido.");
-    dayTotals(day);
-    if (
-      finalized &&
-      day.participants !== undefined &&
-      !day.participants.some((x) => x.present)
-    )
-      throw Error("Selecione quem trabalhou em cada dia do cronograma.");
-    if (
-      finalized &&
-      day.participants?.some(
-        (x) =>
-          x.present &&
-          !dayPeriods(participantDay(day, x.technicianId)).some(
-            (t) => t.start && t.end,
-          ),
-      )
-    )
-      throw Error("Informe os horários de cada profissional presente no dia.");
-    if (
-      finalized &&
-      (day.participants === undefined
-        ? [day]
-        : day.participants
-            .filter((x) => x.present)
-            .map((x) => participantDay(day, x.technicianId))
-      ).some((d) =>
-        dayPeriods(d).some((t) => Boolean(t.start) !== Boolean(t.end)),
-      )
-    )
-      throw new Error("Complete início e fim de cada período utilizado.");
-  }
+  validateSchedule(p.days, finalized, p.formRevision === 2);
+  if (p.formRevision === 2 && p.reasons.some((r) => r.services.length !== 1))
+    throw Error("Cada motivo deve ter um único serviço.");
   for (const part of p.parts)
     if (
       !part.code.trim() ||
@@ -481,12 +659,12 @@ export function validateReport(p: Report, finalized: boolean) {
       !["requested", "replaced"].includes(part.kind)
     )
       throw new Error(
-        "Peças precisam de código, quantidade positiva e classificação.",
+        "Peças precisam de código, quantidade positiva e tipo de serviço.",
       );
   if (finalized) {
-    if (p.type === "interno" && hasReportTravel(p))
+    if (isNonTravelReport(p.type) && hasReportTravel(p))
       throw Error(
-        "Atendimento interno não utiliza KM de deslocamento nem períodos de ida/volta. Revise o cronograma.",
+        "Atendimento interno ou remoto não utiliza KM de deslocamento nem períodos de ida/volta. Revise o cronograma.",
       );
     validateEquipment(p.equipment);
     if (!p.reasons.length || p.reasons.some((r) => !r.description.trim()))
@@ -500,7 +678,22 @@ export function validateReport(p: Report, finalized: boolean) {
       throw new Error(
         "Descreva pelo menos um serviço em cada motivo; remova serviços vazios.",
       );
-    if (!p.concluded || !p.released || !p.photosSent)
+    if (p.formRevision === 2) {
+      if (
+        p.reasons.some(
+          (r) => r.services.length !== 1 || !r.services[0].completed,
+        )
+      )
+        throw Error(
+          "Informe um único serviço e se ele foi concluído em cada motivo.",
+        );
+      if (
+        !p.primaryTechnicianCharged ||
+        p.additionalTechnicians?.some((member) => !member.charged)
+      )
+        throw Error("Informe se o serviço de cada profissional foi cobrado.");
+    }
+    if (!p.concluded || !p.released)
       throw new Error("Preencha o status final.");
     if (!p.technicianSignature?.uri || !p.clientSignature?.uri)
       throw new Error(
@@ -580,7 +773,19 @@ export function participantDay(day: Day, technicianId: string): Day {
     ]),
   ];
   const periods = person.present
-    ? periodOrder.flatMap((kind) => periodsFor(technicianId, kind))
+    ? periodOrder.flatMap((kind) =>
+        periodsFor(technicianId, kind).map((period, index) => {
+          if (!person.sameHoursAs && !person.sameVehicleAs) return period;
+          const readings = vehicle.periods.filter((p) => p.kind === kind);
+          const ownReading =
+            readings.find((p) => p.id === period.id) || readings[index];
+          return {
+            ...period,
+            odometerStart: ownReading?.odometerStart,
+            odometerEnd: ownReading?.odometerEnd,
+          };
+        }),
+      )
     : person.periods;
   return {
     ...day,
@@ -649,13 +854,24 @@ export function separateDayVehicle(
   const person = day.participants?.find((p) => p.technicianId === id);
   if (!person) throw Error("Profissional não encontrado neste dia.");
   const resolved = participantDay(day, id),
-    ownTravel = person.periods.filter((p) => p.kind !== "work");
+    ownTravel = person.periods.filter((p) => p.kind !== "work"),
+    ownWork = person.periods.filter((p) => p.kind === "work"),
+    sharedWork = dayPeriods(resolved).filter((p) => p.kind === "work");
+  const work = (ownWork.length ? ownWork : sharedWork).map((period, index) => {
+    const shared =
+      sharedWork.find((p) => p.id === period.id) || sharedWork[index];
+    return {
+      ...period,
+      odometerStart: period.odometerStart || shared?.odometerStart,
+      odometerEnd: period.odometerEnd || shared?.odometerEnd,
+    };
+  });
   return {
     sameVehicleAs: null,
     odometerStart: person.odometerStart || resolved.odometerStart,
     odometerEnd: person.odometerEnd || resolved.odometerEnd,
     periods: [
-      ...person.periods.filter((p) => p.kind === "work"),
+      ...work,
       ...(ownTravel.some(hasPeriodData)
         ? ownTravel
         : dayPeriods(resolved).filter((p) => p.kind !== "work")
@@ -716,11 +932,20 @@ export function digits(value: string) {
   return value.replace(/\D/g, "");
 }
 export function canonicalDocument(kind: CatalogKind, value: string) {
-  const v = kind === "parts" ? value.trim().toUpperCase() : digits(value);
-  if (kind === "clients" && v.length !== 14)
-    throw new Error("CNPJ precisa ter 14 dígitos.");
+  const v =
+    kind === "clients" || kind === "vehicles"
+      ? value.toUpperCase().replace(/[^A-Z0-9]/g, "")
+      : kind === "technicians"
+        ? digits(value)
+        : value.trim().toUpperCase();
+  if (kind === "clients" && !/^[A-Z0-9]{12}[0-9]{2}$/.test(v))
+    throw new Error(
+      "CNPJ precisa ter 14 caracteres, com os dois últimos numéricos.",
+    );
   if (kind === "technicians" && v.length !== 11)
     throw new Error("CPF precisa ter 11 dígitos.");
   if (kind === "parts" && !v) throw new Error("Informe o código da peça.");
+  if (kind === "vehicles" && (!v || v.length > 20))
+    throw new Error("Informe a placa do veículo.");
   return v;
 }

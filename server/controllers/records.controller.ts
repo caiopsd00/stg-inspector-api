@@ -2,6 +2,8 @@ import type { Request, Response } from "express";
 
 import { listRecords, saveEntry } from "../application/record-service.js";
 import { fail } from "../relational-utils.js";
+import { pool } from "../db.js";
+import { recordTables } from "../repositories/record-access.js";
 import {
   idSchema,
   inspectionSchema,
@@ -32,5 +34,16 @@ export const recordsController = {
       kind === "reports" ? reportSchema : inspectionSchema
     ).parse(input.payload);
     res.json({ item: await saveEntry(kind, id, input, req.user!) });
+  },
+  async startFilling(req: Request, res: Response) {
+    const kind = kinds.parse(req.params.kind);
+    const id = idSchema.parse(req.params.id);
+    await pool.query(
+      `INSERT INTO record_fill_starts(kind,record_id,user_id)
+       SELECT $1,$2,$3 WHERE NOT EXISTS (SELECT 1 FROM ${recordTables[kind]} WHERE id=$2)
+       ON CONFLICT DO NOTHING`,
+      [kind, id, req.user!.id],
+    );
+    res.sendStatus(204);
   },
 };

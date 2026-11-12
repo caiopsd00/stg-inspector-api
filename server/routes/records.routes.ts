@@ -7,5 +7,6 @@ export function createRecordsRoutes() {
   routes.get("/:kind", recordsController.list);
   routes.get("/:kind/:id", recordsController.get);
   routes.put("/:kind/:id", recordsController.save);
+  routes.post("/:kind/:id/filling-start", recordsController.startFilling);
   return routes;
 }

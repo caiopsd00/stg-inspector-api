@@ -6,10 +6,10 @@ import { mediaInput } from "../validation.js";
 
 export const mediaController = {
   async upload(req: Request, res: Response) {
-    const { dataUrl, name } = mediaInput.parse(req.body);
+    const { dataUrl, name, signature } = mediaInput.parse(req.body);
     res
       .status(201)
-      .json({ media: await uploadMedia(req.user!, dataUrl, name) });
+      .json({ media: await uploadMedia(req.user!, dataUrl, name, signature) });
   },
   async get(req: Request, res: Response) {
     const id = z.string().uuid().parse(req.params.id);

@@ -2,13 +2,20 @@ import {
   normalizeInspectionResult,
   templateInspectionSections,
 } from "../../contracts/inspection-template.js";
-import type { Entry } from "../../contracts/domain.js";
+import {
+  dayPeriods,
+  hasPeriodData,
+  newDay,
+  type Day,
+  type Entry,
+} from "../../contracts/domain.js";
 import { reference } from "./catalog-repository.js";
 import { fileLink, prepareRecordSave } from "./record-common.js";
 import {
   recordRows,
   entryFromRow,
   snap,
+  vehicleSnap,
   type RecordFilter,
 } from "./record-query.js";
 import {
@@ -26,6 +33,7 @@ import {
   stamp,
   mediaDTO,
 } from "../relational-utils.js";
+import { periodColumns, periodFromRow } from "./schedule-columns.js";
 
 export async function readInspections(
   db: DB,
@@ -72,6 +80,21 @@ export async function readInspections(
     }
     // The numeric slots are a template adapter, not persisted fields/JSON.
     const payload = {
+      ...(r.form_revision === 2 ? { formRevision: 2 } : {}),
+      vehicleSnapshot: vehicleSnap(r),
+      days: children.inspection_days
+        .filter((day) => day.inspection_id === r.id)
+        .map((day) => ({
+          ...newDay(day.id),
+          date: isoDate(day.date),
+          notes: day.notes,
+          periods: children.inspection_day_periods
+            .filter(
+              (period) =>
+                period.inspection_id === r.id && period.day_id === day.id,
+            )
+            .map(periodFromRow),
+        })),
       id: r.id,
       name: r.name,
       createdAt: stamp(r.created_at),
@@ -85,8 +108,16 @@ export async function readInspections(
         "004": r.nominal_capacity,
         "005": r.equipment_year == null ? "" : String(r.equipment_year),
         "006": reading(r, "hourmeter"),
+        hourmeterUpper: reading(r, "hourmeter_upper"),
         "007": reading(r, "odometer"),
         "008": r.plate_fleet,
+        equipmentBrand: r.equipment_brand,
+        ...(r.equipment_plate == null
+          ? {}
+          : { equipmentPlate: r.equipment_plate }),
+        ...(r.equipment_fleet == null
+          ? {}
+          : { equipmentFleet: r.equipment_fleet }),
         "009": r.performed_by || r.technician_name || r.examiner,
         "010": brDate(r.inspection_date),
         "011": normalizeInspectionResult(r.result),
@@ -144,6 +175,12 @@ export async function saveInspection(
       before?.payload.approvedByTechnicianId === approverId,
     ),
     performedBy = f["164"] || techSnapshot?.name || tech?.name || "";
+  const sameEquipment = before && before.equipmentId === input.equipmentId;
+  const equipmentValue = (field: string, catalogField: string) =>
+    f[field] ??
+    (sameEquipment
+      ? (before.payload.documentFields[field] ?? null)
+      : (equipment?.data[catalogField] ?? null));
   await upsert(db, "inspections", {
     ...common,
     name: p.name || "",
@@ -151,7 +188,9 @@ export async function saveInspection(
     technician_name: performedBy || null,
     technician_cpf: techSnapshot?.identifier || tech?.identifier || null,
     equipment_type: f["001"] || "",
-    equipment_brand: equipment?.data.brand || "",
+    equipment_brand: equipmentValue("equipmentBrand", "brand") || "",
+    equipment_plate: equipmentValue("equipmentPlate", "plate"),
+    equipment_fleet: equipmentValue("equipmentFleet", "fleet"),
     equipment_model: f["002"] || "",
     equipment_serial: f["003"] || "",
     equipment_year: year(f["005"]),
@@ -166,10 +205,35 @@ export async function saveInspection(
     approved_by_technician_id: approverId,
     ...readingColumns("odometer", f["007"]),
     ...readingColumns("hourmeter", f["006"]),
+    ...readingColumns(
+      "hourmeter_upper",
+      f.hourmeterUpper ?? before?.payload.documentFields.hourmeterUpper,
+    ),
   });
   await db.query("DELETE FROM inspection_files WHERE inspection_id=$1", [id]);
   await db.query("DELETE FROM inspection_items WHERE inspection_id=$1", [id]);
   const parent = { inspection_id: id };
+  if (p.days !== undefined) {
+    await db.query("DELETE FROM inspection_days WHERE inspection_id=$1", [id]);
+    for (const [position, day] of (p.days as Day[]).entries()) {
+      await insert(db, "inspection_days", {
+        ...parent,
+        id: day.id,
+        position,
+        date: date(day.date),
+        notes: day.notes || "",
+      });
+      for (const [position, period] of dayPeriods(day)
+        .filter(hasPeriodData)
+        .entries())
+        await insert(db, "inspection_day_periods", {
+          ...parent,
+          day_id: day.id,
+          position,
+          ...periodColumns(period),
+        });
+    }
+  }
   for (const [section_position, s] of p.sections.entries())
     for (const [position, item] of s.items.entries()) {
       await insert(db, "inspection_items", {

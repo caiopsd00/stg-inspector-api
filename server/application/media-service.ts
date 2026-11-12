@@ -1,8 +1,10 @@
 import crypto from "node:crypto";
+import { canAdminister, type SignatureTarget } from "../../contracts/domain.js";
 
 import type { User } from "../auth.js";
 import { sha } from "../auth.js";
-import { fail, type DB } from "../relational-utils.js";
+import { fail, insert, stamp, type DB } from "../relational-utils.js";
+import { pool } from "../db.js";
 import {
   insertMediaMetadata,
   mediaAccessRow,
@@ -22,7 +24,7 @@ const runUpload = createConcurrencyLimit(
 function canAccessMedia(user: User, row: MediaAccessRow | undefined): boolean {
   return Boolean(
     row &&
-    (user.role === "admin" ||
+    (canAdminister(user.role) ||
       row.created_by === user.id ||
       row.in_own_report ||
       row.in_own_inspection),
@@ -53,11 +55,21 @@ export async function validateMediaReferences(
   }
 }
 
-export function uploadMedia(user: User, dataUrl: string, name: string) {
-  return runUpload(() => storeMedia(user, dataUrl, name));
+export function uploadMedia(
+  user: User,
+  dataUrl: string,
+  name: string,
+  signature?: SignatureTarget,
+) {
+  return runUpload(() => storeMedia(user, dataUrl, name, signature));
 }
 
-async function storeMedia(user: User, dataUrl: string, name: string) {
+async function storeMedia(
+  user: User,
+  dataUrl: string,
+  name: string,
+  signature?: SignatureTarget,
+) {
   const { bytes, mime, width, height } = await prepareMediaImage(dataUrl);
   const hash = sha(bytes);
   let old = await mediaByOwnerAndHash(user.id, hash);
@@ -94,13 +106,31 @@ async function storeMedia(user: User, dataUrl: string, name: string) {
       if (!inserted) await storage.delete(key);
     }
   }
+  const capture =
+    signature &&
+    (await insert(pool, "signature_captures", {
+      file_id: id,
+      kind: signature.kind,
+      record_id: signature.recordId,
+      signer_role: signature.signerRole,
+      signer_name: signature.signerName,
+      created_by: user.id,
+    }));
   return {
     id,
     uri: "/api/media/" + id,
     name,
     width,
     height,
-    createdAt: old?.created_at || new Date().toISOString(),
+    createdAt: capture
+      ? stamp(capture.signed_at)
+      : old?.created_at || new Date().toISOString(),
+    ...(capture
+      ? {
+          captureId: capture.id as string,
+          signerName: capture.signer_name as string,
+        }
+      : {}),
   };
 }
 

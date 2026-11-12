@@ -97,7 +97,10 @@ Cada serviço retém no máximo três arquivos de log de 10 MiB.
    docker compose --env-file .env.production -f compose.production.yml exec api node dist/server/create-user.js
    ```
 
-   Informe nome, CPF, e-mail e senha. O técnico vinculado é criado junto.
+   Informe nome, e-mail e senha. O perfil padrão é Administrador, sem vínculo
+   técnico ativo. Se a mesma pessoa também realiza atendimentos/inspeções,
+   escolha **Técnico + ADM** em Cadastros ou acrescente `-e USER_ROLE=technician_admin`
+   depois de `exec` no comando acima; nesse perfil o CPF é solicitado.
    Não há seed demonstrativo. Reexecutar para um e-mail existente redefine
    senha/perfil; não é um comando de inicialização diária.
 

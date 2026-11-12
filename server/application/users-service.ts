@@ -1,4 +1,5 @@
 import { fail } from "../relational-utils.js";
+import { isTechnician } from "../../contracts/domain.js";
 import { profileByUserId, userRows } from "../repositories/users-repository.js";
 export {
   createUserAndTechnician,
@@ -26,12 +27,14 @@ export async function listUsers() {
     email: row.email,
     role: row.role,
     active: row.active,
-    technician: row.technician_id
-      ? {
-          id: row.technician_id,
-          cpf: row.technician_cpf,
-          active: row.technician_active,
-        }
-      : null,
+    cpf: row.technician_cpf || "",
+    technician:
+      isTechnician(row.role) && row.technician_id
+        ? {
+            id: row.technician_id,
+            cpf: row.technician_cpf,
+            active: row.technician_active,
+          }
+        : null,
   }));
 }

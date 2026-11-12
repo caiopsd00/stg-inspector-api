@@ -1,5 +1,9 @@
 import type { User } from "../auth.js";
-import { reportTeam } from "../../contracts/domain.js";
+import {
+  canAdminister,
+  isTechnician,
+  reportTeam,
+} from "../../contracts/domain.js";
 import type { DB } from "../relational-utils.js";
 import { fail } from "../relational-utils.js";
 
@@ -13,6 +17,7 @@ export async function technicianIdForUser(
   db: DB,
   user: User,
 ): Promise<string | null> {
+  if (!isTechnician(user.role)) return null;
   const row = (
     await db.query(
       "SELECT id FROM technicians WHERE user_id=$1 AND active LIMIT 1",
@@ -29,7 +34,7 @@ export async function assertTechnicianCanSave(
   input: { technicianId: string | null; payload: Record<string, any> },
   user: User,
 ) {
-  if (user.role === "admin") return;
+  if (canAdminister(user.role)) return;
   const ownId = await technicianIdForUser(db, user);
   if (!ownId) throw fail(403, "Seu usuário não possui cadastro técnico ativo.");
   const existing = (

@@ -1,3 +1,5 @@
+import type { Day } from "./domain.js";
+
 export type ItemSituation = "A" | "B" | "C" | "D";
 
 export type InspectionImage = {
@@ -7,6 +9,8 @@ export type InspectionImage = {
   createdAt: string;
   height?: number;
   width?: number;
+  captureId?: string;
+  signerName?: string;
 };
 
 export type InspectionItem = {
@@ -27,6 +31,8 @@ export type InspectionSection = {
 };
 
 export type Inspection = {
+  formRevision?: 2;
+  days?: Day[];
   id: string;
   name: string;
   createdAt: string;
@@ -36,6 +42,12 @@ export type Inspection = {
   sections: InspectionSection[];
   clientSnapshot?: { name: string; identifier: string } | null;
   technicianSnapshot?: { name: string; identifier: string } | null;
+  vehicleSnapshot?: {
+    plate: string;
+    model: string;
+    color: string;
+    rentalCompany: string;
+  } | null;
   technicianSignature?: InspectionImage;
   clientSignature?: InspectionImage;
   signature?: InspectionImage;

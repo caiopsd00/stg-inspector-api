@@ -4,12 +4,18 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { inflateSync } from "node:zlib";
 
 import type { Storage } from "@google-cloud/storage";
 import sharp from "sharp";
 import JSZip from "jszip";
 
-import { newReport, type Entry } from "../contracts/domain.js";
+import {
+  newDay,
+  newReport,
+  type Entry,
+  type Report,
+} from "../contracts/domain.js";
 import { createReportPdf } from "../server/report-pdf.js";
 import { documentForRecord } from "../server/documents.js";
 import { parseStorageConfig } from "../server/object-storage/config.js";
@@ -381,6 +387,349 @@ test("migração é verificável, idempotente e dry-run não grava", async () =>
     );
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+function pdfTextPages(pdf: Buffer) {
+  // Controlled PDFKit fixture using its built-in Helvetica fonts. Decode its
+  // text operators without adding a production PDF parser dependency.
+  return [
+    ...pdf.toString("latin1").matchAll(/stream\r?\n([\s\S]*?)\r?\nendstream/g),
+  ]
+    .map((match) => {
+      let content: string;
+      try {
+        content = inflateSync(Buffer.from(match[1], "latin1")).toString(
+          "latin1",
+        );
+      } catch {
+        return [];
+      }
+      return [...content.matchAll(/\[([^\]]*)\]\s*TJ/g)].map((operator) =>
+        [...operator[1].matchAll(/<([0-9a-f]+)>/gi)]
+          .map((token) => Buffer.from(token[1], "hex").toString("latin1"))
+          .join(""),
+      );
+    })
+    .filter((text) => text.length);
+}
+
+function pdfTextOperators(pdf: Buffer) {
+  return pdfTextPages(pdf).flat();
+}
+
+test("PDF técnico mantém seções consecutivas de A a G, com peças em D", async () => {
+  const entry = reportEntry(randomUUID());
+  entry.payload.reasons = [];
+  const pdf = await createReportPdf(entry, fakeCloud().storage);
+  const text = pdfTextOperators(pdf);
+  const titles = [
+    "IDENTIFICAÇÃO",
+    "EQUIPAMENTO",
+    "MOTIVOS E SERVIÇOS",
+    "PEÇAS UTILIZADAS / SOLICITADAS",
+    "PENDÊNCIAS / PRÓXIMOS PASSOS",
+    "CRONOGRAMA DE ATENDIMENTO",
+    "STATUS FINAL",
+  ];
+  let previous = -1;
+  titles.forEach((title, index) => {
+    const position = text.indexOf(title);
+    assert.ok(position > previous, `Seção ausente ou fora de ordem: ${title}`);
+    assert.equal(text[position - 1], String.fromCharCode(65 + index), title);
+    previous = position;
+  });
+  if (process.env.RENDER_REPORT_PDF) {
+    await fs.mkdir(path.dirname(process.env.RENDER_REPORT_PDF), {
+      recursive: true,
+    });
+    await fs.writeFile(process.env.RENDER_REPORT_PDF, pdf);
+  }
+});
+
+test("PDF técnico preserva fotos, equipe e textos extensos com um cabeçalho e rodapé por página", async () => {
+  const cloud = fakeCloud();
+  const media: Record<
+    string,
+    {
+      id: string;
+      uri: string;
+      name: string;
+      createdAt: string;
+      signerName?: string;
+    }
+  > = {};
+  for (const [name, width, height] of [
+    ["horizontal", 1000, 500],
+    ["vertical", 360, 1200],
+    ["panoramica", 1400, 250],
+    ["assinatura-tecnico", 700, 200],
+    ["assinatura-cliente", 700, 200],
+  ] as const) {
+    const id = randomUUID();
+    const drawing = name.startsWith("assinatura")
+      ? `<path d="M20,150 Q160,-60 220,140 T430,100 Q520,-20 660,130" fill="none" stroke="#20242c" stroke-width="5"/>`
+      : `<rect width="100%" height="100%" fill="#dce6ec"/><rect x="12" y="12" width="${width - 24}" height="${height - 24}" fill="none" stroke="#273b4b" stroke-width="5"/><text x="28" y="65" font-family="Arial" font-size="24">FOTO ${name.toUpperCase()}</text>`;
+    const bytes = await sharp(
+      Buffer.from(
+        `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">${drawing}</svg>`,
+      ),
+    )
+      .png()
+      .toBuffer();
+    await cloud.storage.save(mediaStorageKey(id), bytes, "image/png");
+    media[name] = {
+      id,
+      uri: `/api/media/${id}`,
+      name: `${name}.png`,
+      createdAt: "2026-11-12T14:35:00Z",
+    };
+  }
+  const payload: Report = {
+    ...newReport(),
+    formRevision: 2,
+    type: "externo",
+    operator: "OPERADOR DE TESTE",
+    requester: "REPRESENTANTE DO CLIENTE",
+    location: "UNIDADE INDUSTRIAL - SETOR DE MOVIMENTACAO DE CARGAS",
+    equipment: {
+      type: "Guindaste",
+      brand: "MARCA TESTE",
+      model: "MODELO DE TESTE",
+      serial: "SERIE-QA-2026",
+      year: "2020",
+      plate: "ABC1D23",
+      fleet: "FROTA 05",
+      odometer: "15000",
+      hourmeterLower: "2300",
+      hourmeterUpper: "1700",
+    },
+    reasons: [
+      {
+        id: "r1",
+        description:
+          "Verificar o sistema de acionamento e a movimentacao da lanca. Conferir as conexoes e registrar as condicoes observadas.",
+        pending:
+          "Programar revisao preventiva na proxima parada de manutencao.",
+        services: [
+          {
+            id: "s1",
+            description:
+              "Realizada verificacao das conexoes, limpeza do conjunto e teste funcional. Equipamento acompanhado durante a operacao.",
+            completed: "Sim",
+            notes:
+              "Teste realizado com acompanhamento do operador. As fotos registram as condicoes antes e depois do atendimento.",
+            photos: [media.horizontal, media.vertical, media.panoramica],
+          },
+        ],
+      },
+      {
+        id: "r2",
+        description: "Conferencia dos comandos auxiliares.",
+        pending: "",
+        services: [
+          {
+            id: "s2",
+            description:
+              "Realizado teste dos comandos e orientacao ao operador.",
+            notes: "",
+            completed: "Sim",
+            photos: [],
+          },
+        ],
+      },
+    ],
+    parts: [
+      {
+        id: "p1",
+        code: "PC-001",
+        description:
+          "Conjunto de vedacao para acionamento do sistema hidraulico",
+        supplier: "FORNECEDOR DE TESTE",
+        quantity: 2,
+        kind: "replaced",
+        codeHistory: [],
+      },
+      {
+        id: "p2",
+        code: "PC-002",
+        description: "Filtro de retorno",
+        supplier: "DISTRIBUIDOR INDUSTRIAL",
+        quantity: 1,
+        kind: "requested",
+        codeHistory: [],
+      },
+    ],
+    days: [0, 1].map((i) => ({
+      ...newDay(`day-${i}`),
+      date: `2026-11-${10 + i}`,
+      notes:
+        "Atendimento com dois profissionais. Validacoes realizadas junto ao cliente.",
+      participants: [
+        {
+          technicianId: "tech-1",
+          present: true,
+          sameHoursAs: null,
+          sameVehicleAs: null,
+          odometerStart: "",
+          odometerEnd: "",
+          periods: [
+            {
+              id: `ida-${i}`,
+              kind: "outbound" as const,
+              start: "07:00",
+              end: "08:00",
+              pauseMinutes: "0",
+              odometerStart: "100",
+              odometerEnd: "125",
+            },
+            {
+              id: `trabalho-${i}`,
+              kind: "work" as const,
+              start: "08:00",
+              end: "12:00",
+              pauseMinutes: "30",
+              odometerStart: "N/A",
+              odometerEnd: "N/A",
+            },
+            {
+              id: `volta-${i}`,
+              kind: "inbound" as const,
+              start: "12:00",
+              end: "13:00",
+              pauseMinutes: "0",
+              odometerStart: "125",
+              odometerEnd: "150",
+            },
+          ],
+        },
+        {
+          technicianId: "tech-2",
+          present: true,
+          sameHoursAs: "tech-1",
+          sameVehicleAs: "tech-1",
+          odometerStart: "",
+          odometerEnd: "",
+          periods: [],
+        },
+      ],
+    })),
+    concluded: "Sim",
+    released: "Sim",
+    observations:
+      "Atendimento encerrado apos os testes. Cliente orientado sobre as pendencias e cuidados na operacao.",
+    technicianSignature: {
+      ...media["assinatura-tecnico"],
+      signerName: "TECNICO RESPONSAVEL DE TESTE",
+    },
+    clientSignature: {
+      ...media["assinatura-cliente"],
+      signerName: "REPRESENTANTE DO CLIENTE DE TESTE",
+    },
+  };
+  const entry: Entry = {
+    ...reportEntry(media.horizontal.id),
+    number: "QA-2026-12345",
+    status: "finalized",
+    technicianId: "tech-1",
+    payload: {
+      ...payload,
+      clientSnapshot: {
+        name: "CLIENTE DE TESTE INDUSTRIA E SERVICOS",
+        identifier: "12345678000190",
+      },
+      technicianSnapshot: { name: "TECNICO RESPONSAVEL DE TESTE" },
+      teamSnapshot: [
+        {
+          technicianId: "tech-1",
+          name: "TECNICO RESPONSAVEL DE TESTE",
+          role: "technician",
+          charged: "Sim",
+        },
+        {
+          technicianId: "tech-2",
+          name: "PROFISSIONAL AUXILIAR DE TESTE",
+          role: "auxiliary",
+          charged: "Não",
+        },
+      ],
+    },
+  };
+  for (const variant of ["completo", "textos-longos"]) {
+    const record = structuredClone(entry);
+    if (variant === "textos-longos") {
+      record.payload.location =
+        "Descricao extensa da unidade e do local de atendimento. ".repeat(160) +
+        "\nFIM DO LOCAL EXTENSO";
+      record.payload.technicianSignature.signerName =
+        "TECNICO COM NOME COMPLETO PARA TESTAR QUEBRA DE LINHA NA ASSINATURA";
+      record.payload.reasons[0].description =
+        "Texto extenso com todas as observacoes do atendimento. ".repeat(180) +
+        "\nFIM DO MOTIVO EXTENSO";
+      record.payload.observations =
+        "Registro complementar de todas as verificacoes realizadas no equipamento. ".repeat(
+          150,
+        ) + "\nFIM DAS OBSERVACOES EXTENSAS";
+    }
+    const pdf = await createReportPdf(record, cloud.storage);
+    const text = pdfTextOperators(pdf);
+    const pages = [...pdf.toString("latin1").matchAll(/\/Type\s*\/Page\b/g)]
+      .length;
+    assert.ok(pages >= 3);
+    assert.equal(text.filter((line) => line === "BR LIFT").length, pages);
+    assert.equal(text.filter((line) => line.startsWith("Pág. ")).length, pages);
+    const isBodyLine = (line: string) =>
+      !line.startsWith("BR LIFT") &&
+      !line.startsWith("Pág. ") &&
+      line !== `Atendimento ${record.number}` &&
+      line !== "continuação" &&
+      line !== "RELATÓRIO DE ATENDIMENTO TÉCNICO" &&
+      line !== `O.S. OMIE ${record.number}`;
+    const headers = [
+      "IDENTIFICAÇÃO",
+      "EQUIPAMENTO",
+      "MOTIVOS E SERVIÇOS",
+      "PEÇAS UTILIZADAS / SOLICITADAS",
+      "PENDÊNCIAS / PRÓXIMOS PASSOS",
+      "CRONOGRAMA DE ATENDIMENTO",
+      "STATUS FINAL",
+    ];
+    for (const lines of pdfTextPages(pdf)) {
+      const body = lines.filter(isBodyLine);
+      assert.ok(body.length, "Página sem conteúdo");
+      assert.ok(
+        !headers.includes(body.at(-1)!),
+        "Título isolado no fim da página",
+      );
+    }
+    const normalized = text.filter(isBodyLine).join("").replace(/\s+/g, "");
+    for (const phrase of [
+      record.payload.reasons[0].description,
+      record.payload.observations,
+      record.payload.location,
+      record.payload.technicianSignature.signerName,
+      "TECNICO RESPONSAVEL DE TESTE",
+      "REPRESENTANTE DO CLIENTE DE TESTE",
+      "SERIE-QA-2026",
+      "PC-001",
+      "PC-002",
+      "Trabalho 14:00",
+      "Deslocamento 08:00",
+      "KM 100",
+    ])
+      assert.ok(
+        normalized.includes(phrase.replace(/\s+/g, "")),
+        `Texto perdido: ${phrase.slice(-60)}`,
+      );
+    for (const image of Object.values(media))
+      assert.ok(cloud.reads.includes(mediaStorageKey(image.id)));
+    if (process.env.RENDER_REPORT_REVIEW_DIR) {
+      await fs.mkdir(process.env.RENDER_REPORT_REVIEW_DIR, { recursive: true });
+      await fs.writeFile(
+        path.join(process.env.RENDER_REPORT_REVIEW_DIR, `${variant}.pdf`),
+        pdf,
+      );
+    }
   }
 });
 

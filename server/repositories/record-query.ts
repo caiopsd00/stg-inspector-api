@@ -29,6 +29,15 @@ export const eqSnapshot = (r: any) => ({
 });
 export const snap = (id: string | null, name: string, identifier: string) =>
   id ? { id, name, identifier } : null;
+export const vehicleSnap = (r: any) =>
+  r.vehicle_id
+    ? {
+        plate: r.vehicle_plate,
+        model: r.vehicle_model,
+        color: r.vehicle_color,
+        rentalCompany: r.vehicle_rental_company,
+      }
+    : null;
 
 export async function recordRows(
   db: DB,
@@ -87,12 +96,17 @@ export async function recordRows(
         "service_order_files",
         "service_order_part_codes",
       ]
-    : ["inspection_items", "inspection_files"];
+    : [
+        "inspection_items",
+        "inspection_files",
+        "inspection_days",
+        "inspection_day_periods",
+      ];
   for (const name of tables) {
     const files = name.endsWith("_files");
     children[name] = (
       await db.query(
-        `SELECT c.*${files ? ",f.width,f.height" : ""} FROM ${name} c ${files ? "JOIN files f ON f.id=c.file_id" : ""} WHERE c.${isReport ? "service_order_id" : "inspection_id"}=ANY($1::text[]) ORDER BY ${files ? "c.position,c.id" : name === "inspection_items" ? "c.section_position,c.position" : "c.position"}`,
+        `SELECT c.*${files ? ",f.width,f.height,sc.signer_name" : ""} FROM ${name} c ${files ? "JOIN files f ON f.id=c.file_id LEFT JOIN signature_captures sc ON sc.id=c.capture_id" : ""} WHERE c.${isReport ? "service_order_id" : "inspection_id"}=ANY($1::text[]) ORDER BY ${files ? "c.position,c.id" : name === "inspection_items" ? "c.section_position,c.position" : "c.position"}`,
         [ids],
       )
     ).rows;
@@ -107,6 +121,7 @@ export function entryFromRow(r: any, kind: Kind, payload: any) {
     number: r.number,
     clientId: r.client_id,
     equipmentId: r.equipment_id,
+    vehicleId: r.vehicle_id,
     technicianId: r.primary_technician_id || null,
     clientName: r.client_name,
     technicianName: r.primary_technician_name || undefined,

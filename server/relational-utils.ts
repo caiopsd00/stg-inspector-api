@@ -106,6 +106,9 @@ export const mediaDTO = (r: any) => ({
   createdAt: stamp(r.created_at),
   width: r.width,
   height: r.height,
+  ...(r.capture_id
+    ? { captureId: r.capture_id, signerName: r.signer_name }
+    : {}),
 });
 export async function audit(
   db: DB,

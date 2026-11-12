@@ -5,6 +5,7 @@ import { createDocumentService } from "../application/document-service.js";
 import { listRecords } from "../application/record-service.js";
 import { fail } from "../relational-utils.js";
 import { idSchema, kinds } from "../validation.js";
+import { documentFilename } from "../../contracts/domain.js";
 
 export function createDocumentsController() {
   const generate = createDocumentService();
@@ -16,10 +17,7 @@ export function createDocumentsController() {
       const item = (await listRecords(kind, req.user!, { id }))[0];
       if (!item) throw fail(404, "Registro não encontrado.");
       const result = await generate(item, format);
-      res.setHeader(
-        "Content-Disposition",
-        'attachment; filename="BR-LIFT-' + id + "." + format + '"',
-      );
+      res.attachment(documentFilename(item.clientName, item.number, format));
       res
         .type(
           format === "pdf"

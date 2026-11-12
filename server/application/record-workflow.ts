@@ -1,4 +1,5 @@
 import type { Entry } from "../../contracts/domain.js";
+import { canAdminister } from "../../contracts/domain.js";
 import type { User } from "../auth.js";
 import { sha } from "../auth.js";
 import { transaction } from "../db.js";
@@ -35,15 +36,14 @@ export async function listRecordKind(
     await db.query(
       "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY",
     );
-    const ownTechnicianId =
-      user.role === "admin"
-        ? null
-        : (await technicianIdForUser(db, user)) || "";
+    const ownTechnicianId = canAdminister(user.role)
+      ? null
+      : (await technicianIdForUser(db, user)) || "";
     return read(db, {
       ...filter,
       ownTechnicianId,
-      technicianId: user.role === "admin" ? filter.technicianId : undefined,
-      searchTechnician: user.role === "admin",
+      technicianId: canAdminister(user.role) ? filter.technicianId : undefined,
+      searchTechnician: canAdminister(user.role),
     });
   });
 }

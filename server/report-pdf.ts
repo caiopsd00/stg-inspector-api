@@ -1,4 +1,5 @@
 import PDFDocument from "pdfkit";
+import sharp from "sharp";
 import { mediaStorageKey } from "./object-storage/index.js";
 import type { ObjectStorage } from "./object-storage/types.js";
 import {
@@ -9,6 +10,8 @@ import {
   periodLabels,
   hasDayData,
   hasPeriodData,
+  reportTypeLabels,
+  signatureDateTime,
   type Entry,
   type Report,
   type Media,
@@ -17,7 +20,8 @@ import {
 const NAVY = "#18181b";
 const GOLD = "#c9a84c";
 const MARGIN = 42;
-const PAGE_BOTTOM = 778;
+const BODY_TOP = 48;
+const FOOTER_RESERVE = 90;
 
 /** BR LIFT's version of the V0 report: same hierarchy, A4 cadence and gold/navy
  * visual language, with the current normalized report fields and per-person day data. */
@@ -28,7 +32,12 @@ export async function createReportPdf(
   const data = record.payload as Report;
   const doc = new PDFDocument({
     size: "A4",
-    margins: { top: 52, bottom: 42, left: MARGIN, right: MARGIN },
+    margins: {
+      top: BODY_TOP,
+      bottom: FOOTER_RESERVE,
+      left: MARGIN,
+      right: MARGIN,
+    },
     bufferPages: true,
     info: {
       Title: `Relatório de atendimento — ${record.number}`,
@@ -52,60 +61,59 @@ export async function createReportPdf(
       : new Date(value);
     return Number.isNaN(parsed.getTime())
       ? value
-      : parsed.toLocaleDateString("pt-BR");
+      : parsed.toLocaleDateString("pt-BR", {
+          weekday: "long",
+          day: "2-digit",
+          month: "2-digit",
+          year: "numeric",
+        });
   };
   const clean = (value: unknown) => String(value ?? "").trim() || "—";
   const minutesAsHours = (minutes: number) =>
     `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
   function pageHeader(first = false) {
-    const y = first ? 0 : 0;
-    doc.rect(0, y, doc.page.width, first ? 29 : 17).fill(NAVY);
+    doc.rect(0, 0, doc.page.width, first ? 60 : 28).fill(NAVY);
+    doc.rect(0, first ? 60 : 28, doc.page.width, 2).fill(GOLD);
     if (first) {
-      doc.rect(0, 29, doc.page.width, 2).fill(GOLD);
       doc
         .font("Helvetica-Bold")
-        .fontSize(19)
+        .fontSize(18)
         .fillColor(GOLD)
-        .text("BR", MARGIN, 8, { lineBreak: false });
+        .text("BR LIFT", MARGIN, 13, { lineBreak: false });
       doc
         .font("Helvetica-Bold")
-        .fontSize(8)
+        .fontSize(10.5)
         .fillColor("#ffffff")
-        .text("LIFT", MARGIN + 28, 11, { lineBreak: false });
-      doc
-        .font("Helvetica-Bold")
-        .fontSize(12)
-        .fillColor("#ffffff")
-        .text("RELATÓRIO DE ATENDIMENTO TÉCNICO", MARGIN + 66, 8, {
+        .text("RELATÓRIO DE ATENDIMENTO TÉCNICO", MARGIN + 96, 15, {
           lineBreak: false,
         });
-      doc
-        .font("Helvetica")
-        .fontSize(8)
-        .fillColor(GOLD)
-        .text(`Nº ${record.number}`, doc.page.width - MARGIN - 112, 20, {
-          width: 112,
-          align: "right",
-          lineBreak: false,
-        });
+      doc.font("Helvetica-Bold").fontSize(13).fillColor(GOLD);
+      const order = `O.S. OMIE ${record.number}`;
+      const orderWidth = doc.widthOfString(order);
+      if (orderWidth > width) doc.fontSize((13 * width) / orderWidth);
+      doc.text(order, MARGIN, 37, {
+        width,
+        align: "right",
+        lineBreak: false,
+      });
     } else {
       doc
         .font("Helvetica-Bold")
         .fontSize(9)
         .fillColor(GOLD)
-        .text("BR LIFT", MARGIN, 6, { lineBreak: false });
+        .text("BR LIFT", MARGIN, 10, { lineBreak: false });
       doc
         .font("Helvetica")
         .fontSize(8)
         .fillColor("#ffffff")
-        .text(`Atendimento ${record.number}`, MARGIN + 60, 6, {
+        .text(`Atendimento ${record.number}`, MARGIN + 60, 10, {
           lineBreak: false,
         });
       doc
         .font("Helvetica")
         .fontSize(8)
         .fillColor("#ffffff")
-        .text("continuação", doc.page.width - MARGIN - 72, 6, {
+        .text("continuação", doc.page.width - MARGIN - 72, 10, {
           width: 72,
           align: "right",
           lineBreak: false,
@@ -135,29 +143,36 @@ export async function createReportPdf(
   }
   function nextPage() {
     doc.addPage();
-    pageHeader();
-    doc.y = 29;
   }
   function ensure(height: number) {
-    if (doc.y + height > PAGE_BOTTOM) nextPage();
+    const bottom = doc.page.height - FOOTER_RESERVE;
+    const capacity = bottom - BODY_TOP;
+    // Oversized paragraphs flow through PDFKit's normal page margins. Do not
+    // reset the cursor to their original page after that automatic pagination.
+    if (
+      (height <= capacity && doc.y + height > bottom) ||
+      (height > capacity && bottom - doc.y < 60)
+    )
+      nextPage();
   }
-  function section(index: string, title: string) {
-    ensure(32);
-    doc.moveDown(0.5);
-    const y = doc.y;
-    doc.rect(MARGIN, y, width, 21).fill(NAVY);
-    doc.rect(MARGIN, y, 4, 21).fill(GOLD);
-    doc
-      .font("Helvetica-Bold")
-      .fontSize(8)
-      .fillColor(GOLD)
-      .text(index, MARGIN + 11, y + 7, { lineBreak: false });
+  let sectionNumber = 0;
+  function section(title: string, firstContent = 80) {
+    const index = String.fromCharCode(65 + sectionNumber++);
+    ensure(46 + firstContent);
+    const y = doc.y + 10;
+    doc.rect(MARGIN, y, width, 26).fill(NAVY);
+    doc.rect(MARGIN, y, 4, 26).fill(GOLD);
     doc
       .font("Helvetica-Bold")
       .fontSize(9)
+      .fillColor(GOLD)
+      .text(index, MARGIN + 11, y + 9, { lineBreak: false });
+    doc
+      .font("Helvetica-Bold")
+      .fontSize(10)
       .fillColor("#ffffff")
-      .text(title.toUpperCase(), MARGIN + 38, y + 6, { lineBreak: false });
-    doc.y = y + 27;
+      .text(title.toUpperCase(), MARGIN + 34, y + 8, { lineBreak: false });
+    doc.y = y + 36;
   }
   function textBlock(
     value: unknown,
@@ -175,42 +190,85 @@ export async function createReportPdf(
     const w = opts.width ?? width - 18;
     doc
       .font(opts.bold ? "Helvetica-Bold" : "Helvetica")
-      .fontSize(opts.size ?? 9);
-    const h = doc.heightOfString(content, { width: w, lineGap: 1 });
-    ensure(h + 12);
+      .fontSize(opts.size ?? 9.5);
+    const h = doc.heightOfString(content, { width: w, lineGap: 2 });
+    ensure(Math.min(h + 12, 80));
     const y = doc.y;
-    if (opts.bold) doc.rect(MARGIN, y - 1, 3, Math.max(14, h + 2)).fill(GOLD);
+    if (opts.bold)
+      doc
+        .rect(
+          MARGIN,
+          y,
+          2,
+          Math.min(Math.max(14, h), doc.page.height - FOOTER_RESERVE - y),
+        )
+        .fill(GOLD);
     doc
       .fillColor(opts.color ?? "#222222")
-      .text(content, x, y, { width: w, lineGap: 1 });
-    doc.y = y + h + (opts.gap ?? 5);
+      .text(content, x, y, { width: w, lineGap: 2 });
+    doc.y += opts.gap ?? 8;
   }
   function pairGrid(pairs: Array<[string, unknown]>) {
-    const colW = (width - 12) / 2;
+    const colW = (width - 14) / 2;
     for (let i = 0; i < pairs.length; i += 2) {
       const row = pairs.slice(i, i + 2);
-      const heights = row.map(([, value]) => {
-        doc.font("Helvetica").fontSize(9);
-        return doc.heightOfString(clean(value), {
-          width: colW - 8,
-          lineGap: 1,
-        });
+      const labelHeights = row.map(([label]) => {
+        doc.font("Helvetica-Bold").fontSize(7.5);
+        return doc.heightOfString(label.toUpperCase(), { width: colW - 16 });
       });
-      const h = Math.max(heights[0] ?? 0, heights[1] ?? 0) + 16;
+      const heights = row.map(([, value], index) => {
+        doc.font("Helvetica").fontSize(9.5);
+        return (
+          labelHeights[index] +
+          4 +
+          doc.heightOfString(clean(value), {
+            width: colW - 16,
+            lineGap: 2,
+          }) +
+          18
+        );
+      });
+      const h = Math.max(...heights);
+      if (h > doc.page.height - FOOTER_RESERVE - BODY_TOP) {
+        for (const [label, value] of row) {
+          doc.font("Helvetica").fontSize(9.5);
+          const valueHeight = doc.heightOfString(clean(value), {
+            width: width - 18,
+            lineGap: 2,
+          });
+          ensure(
+            valueHeight + 30 <= doc.page.height - FOOTER_RESERVE - BODY_TOP
+              ? valueHeight + 30
+              : 80,
+          );
+          textBlock(label.toUpperCase(), { bold: true, size: 7.5, gap: 4 });
+          textBlock(value);
+        }
+        continue;
+      }
       ensure(h);
       const y = doc.y;
       row.forEach(([label, value], j) => {
-        const x = MARGIN + j * (colW + 12);
+        const x = MARGIN + j * (colW + 14);
         doc
           .font("Helvetica-Bold")
-          .fontSize(6.5)
-          .fillColor("#777777")
-          .text(label.toUpperCase(), x, y, { width: colW - 8 });
+          .fontSize(7.5)
+          .fillColor("#666666")
+          .text(label.toUpperCase(), x + 8, y + 6, { width: colW - 16 });
         doc
           .font("Helvetica")
-          .fontSize(9)
+          .fontSize(9.5)
           .fillColor("#222222")
-          .text(clean(value), x, y + 8, { width: colW - 8, lineGap: 1 });
+          .text(clean(value), x + 8, y + 10 + labelHeights[j], {
+            width: colW - 16,
+            lineGap: 2,
+          });
+        doc
+          .strokeColor("#e4e4e7")
+          .lineWidth(0.4)
+          .moveTo(x, y + h - 3)
+          .lineTo(x + colW, y + h - 3)
+          .stroke();
       });
       doc.y = y + h;
     }
@@ -222,21 +280,21 @@ export async function createReportPdf(
     ]
       .filter(Boolean)
       .join("\n");
-    doc.font("Helvetica").fontSize(9);
-    const h = doc.heightOfString(content, { width: width - 40, lineGap: 1 });
-    ensure(h + 9);
+    doc.font("Helvetica").fontSize(9.5);
+    const h = doc.heightOfString(content, { width: width - 34, lineGap: 2 });
+    ensure(Math.min(h + 12, 80));
     const y = doc.y;
     doc
       .font("Helvetica-Bold")
-      .fontSize(8)
+      .fontSize(9)
       .fillColor(GOLD)
       .text(String(index).padStart(2, "0"), MARGIN, y, { lineBreak: false });
     doc
       .font("Helvetica")
-      .fontSize(9)
+      .fontSize(9.5)
       .fillColor("#222222")
-      .text(content, MARGIN + 27, y, { width: width - 27, lineGap: 1 });
-    doc.y = y + h + 7;
+      .text(content, MARGIN + 34, y, { width: width - 34, lineGap: 2 });
+    doc.y += 10;
   }
   async function image(
     media: Media | undefined,
@@ -246,38 +304,49 @@ export async function createReportPdf(
     const match = /^\/api\/media\/([a-f0-9-]{36})$/.exec(media.uri);
     if (!match) return;
     const bytes = await storage.read(mediaStorageKey(match[1]));
-    ensure(box.height + 24);
+    const dimensions = await sharp(bytes, {
+      limitInputPixels: 40000000,
+    }).metadata();
+    const scale = Math.min(
+      box.width / dimensions.width!,
+      box.height / dimensions.height!,
+    );
+    const imageWidth = dimensions.width! * scale;
+    const imageHeight = dimensions.height! * scale;
+    ensure(imageHeight + 28);
     const y = doc.y;
-    doc.image(bytes, MARGIN + 9, y + 12, {
-      fit: [box.width, box.height],
-      align: "center",
-      valign: "center",
+    doc.image(bytes, MARGIN + (width - imageWidth) / 2, y + 12, {
+      width: imageWidth,
+      height: imageHeight,
     });
-    doc.y = y + box.height + 18;
+    doc.y = y + imageHeight + 28;
   }
 
-  pageHeader(true);
-  doc.y = 43;
-  pairGrid([
-    ["Emissão", date(new Date().toISOString())],
-    ["Identificador", record.number],
-    ["Status", record.status === "draft" ? "Rascunho" : "Finalizado"],
-  ]);
+  doc.y = 76;
   if (record.status === "draft")
     textBlock("RASCUNHO — documento ainda não finalizado", {
       bold: true,
       color: "#a33520",
     });
 
-  section("A", "Identificação");
+  section("Identificação");
+  const vehicle = record.payload.vehicleSnapshot;
   pairGrid([
-    ["Data do atendimento", date(record.date)],
-    ["Cliente", record.payload.clientSnapshot?.name],
+    ["Cliente", record.payload.clientSnapshot?.name || record.clientName],
     ["CNPJ / CPF", record.payload.clientSnapshot?.identifier],
-    ["Tipo de atendimento", data.type],
-    ["Operador", data.operator],
+    ["Tipo de atendimento", reportTypeLabels[data.type] || data.type],
     ["Solicitante", data.requester],
     ["Local", data.location],
+    ...(vehicle
+      ? [
+          [
+            "Veículo",
+            [vehicle.plate, vehicle.model, vehicle.color, vehicle.rentalCompany]
+              .filter(Boolean)
+              .join(" · "),
+          ] as [string, string],
+        ]
+      : []),
   ]);
   for (const [i, person] of (record.payload.teamSnapshot ?? []).entries())
     pairGrid([
@@ -289,12 +358,13 @@ export async function createReportPdf(
             : "Técnico",
         person.name,
       ],
-      ["Documento", person.identifier],
+      ...(person.charged
+        ? [["Serviço cobrado", person.charged] as [string, string]]
+        : []),
     ]);
   if (!record.payload.teamSnapshot?.length)
     pairGrid([
       ["Técnico responsável", record.payload.technicianSnapshot?.name],
-      ["Documento", record.payload.technicianSnapshot?.identifier],
       [
         "Técnicos auxiliares",
         record.payload.auxiliaryNames?.join(", ") ||
@@ -302,7 +372,7 @@ export async function createReportPdf(
       ],
     ]);
 
-  section("B", "Equipamento");
+  section("Equipamento");
   pairGrid([
     ["Tipo", data.equipment.type],
     ["Marca", data.equipment.brand],
@@ -311,49 +381,64 @@ export async function createReportPdf(
     ["Ano de fabricação", data.equipment.year],
     ["Placa", data.equipment.plate],
     ["Frota", data.equipment.fleet],
-    ["KM na data", data.equipment.odometer],
+    ["Operador", data.operator],
+    ["KM", data.equipment.odometer],
     [
-      "Horímetro inferior",
+      "Hor. Inferior",
       data.equipment.hourmeterLower ?? data.equipment.hourmeter,
     ],
-    ["Horímetro superior", data.equipment.hourmeterUpper],
+    ["Hor. Superior", data.equipment.hourmeterUpper],
   ]);
 
-  section("C", "Motivo do serviço");
+  const reasonLeadHeight = (reason: Report["reasons"][number]) => {
+    doc.font("Helvetica").fontSize(9.5);
+    const reasonHeight = doc.heightOfString(clean(reason.description), {
+      width: width - 34,
+      lineGap: 2,
+    });
+    const firstService = reason.services[0];
+    const serviceHeight = firstService
+      ? doc.heightOfString(
+          `Serviço realizado: ${clean(firstService.description)}`,
+          { width: width - 18, lineGap: 2 },
+        )
+      : 0;
+    return Math.min(reasonHeight, 45) + Math.min(serviceHeight, 40) + 24;
+  };
+  section(
+    "Motivos e serviços",
+    data.reasons[0] ? reasonLeadHeight(data.reasons[0]) : 36,
+  );
   if (!data.reasons.length)
     textBlock("Nenhum motivo informado.", { color: "#777777" });
-  for (const [ri, reason] of data.reasons.entries())
+  for (const [ri, reason] of data.reasons.entries()) {
+    ensure(reasonLeadHeight(reason));
     listItem(ri + 1, reason.description);
-
-  section("D", "Serviços realizados");
-  let serviceCount = 0;
-  for (const reason of data.reasons) {
     for (const [si, service] of reason.services.entries()) {
-      serviceCount++;
-      listItem(
-        serviceCount,
-        service.description,
-        [reason.description, service.notes].filter(Boolean).join("\n"),
+      ensure(60);
+      textBlock(
+        `${reason.services.length > 1 ? "Serviço " + (si + 1) : "Serviço realizado"}: ${clean(service.description)}`,
       );
+      if (service.completed)
+        textBlock(`Serviço concluído: ${service.completed}`);
+      if (service.notes) textBlock(`Observações: ${service.notes}`);
       for (const photo of service.photos) {
-        await image(photo, { width: 235, height: 155 });
+        await image(photo, { width: 360, height: 240 });
       }
     }
   }
-  if (!serviceCount)
-    textBlock("Nenhum serviço informado.", { color: "#777777" });
 
-  section("E", "Peças utilizadas / solicitadas");
+  section("Peças utilizadas / solicitadas");
   if (!data.parts.length)
     textBlock("Nenhuma peça registrada.", { color: "#777777" });
   for (const [i, part] of data.parts.entries())
     listItem(
       i + 1,
       part.description || part.code,
-      `Código: ${part.code || "—"}  •  Fornecedor: ${part.supplier || "—"}  •  Quantidade: ${part.quantity}  •  ${part.kind === "replaced" ? "Substituída" : "Solicitada"}`,
+      `Código: ${part.code || "—"}  •  Fornecedor: ${part.supplier || "—"}  •  Quantidade: ${part.quantity}  •  Tipo de serviço: ${part.kind === "replaced" ? "Substituída" : "Solicitada"}`,
     );
 
-  section("F", "Pendências / próximos passos");
+  section("Pendências / próximos passos");
   const pending = data.reasons
     .map((reason) => reason.pending?.trim())
     .filter(Boolean);
@@ -361,15 +446,15 @@ export async function createReportPdf(
     textBlock("Nenhuma pendência registrada.", { color: "#777777" });
   for (const [i, item] of pending.entries()) listItem(i + 1, item);
 
-  section("G", "Cronograma de atendimento");
   const days = data.days.filter(hasDayData);
+  section("Cronograma de atendimento", days.length ? 150 : 80);
   if (!days.length)
     textBlock("Nenhum dia de atendimento registrado.", { color: "#777777" });
   for (const [di, day] of days.entries()) {
-    ensure(28);
+    ensure(140);
     const y = doc.y;
-    doc.rect(MARGIN, y, width, 19).fill("#f4f1e8");
-    doc.rect(MARGIN, y, 3, 19).fill(GOLD);
+    doc.rect(MARGIN, y, width, 26).fill("#f4f1e8");
+    doc.rect(MARGIN, y, 3, 26).fill(GOLD);
     doc
       .font("Helvetica-Bold")
       .fontSize(9)
@@ -377,10 +462,10 @@ export async function createReportPdf(
       .text(
         `DIA ${String(di + 1).padStart(2, "0")}  ·  ${date(day.date)}`,
         MARGIN + 9,
-        y + 6,
+        y + 8,
         { lineBreak: false },
       );
-    doc.y = y + 25;
+    doc.y = y + 36;
     if (day.notes?.trim())
       textBlock(`Observações do dia: ${day.notes}`, {
         bold: true,
@@ -398,6 +483,7 @@ export async function createReportPdf(
           ]
         : day.participants.filter((p) => p.present);
     for (const person of crew) {
+      ensure(75);
       const schedule =
         day.participants === undefined
           ? day
@@ -424,10 +510,14 @@ export async function createReportPdf(
           ? dayTotals(schedule)
           : participantTotals(day, person.technicianId);
       pairGrid([
-        [
-          "KM inicial / final",
-          `${clean(schedule.odometerStart)} / ${clean(schedule.odometerEnd)}`,
-        ],
+        ...(schedule.odometerStart || schedule.odometerEnd
+          ? [
+              [
+                "KM histórico do dia (inicial / final)",
+                `${clean(schedule.odometerStart)} / ${clean(schedule.odometerEnd)}`,
+              ] as [string, string],
+            ]
+          : []),
         [
           "KM atribuído",
           ownTotals.km
@@ -441,14 +531,24 @@ export async function createReportPdf(
         const periods = dayPeriods(schedule).filter(
           (p) => p.kind === kind && hasPeriodData(p),
         );
-        for (const [pi, period] of periods.entries())
+        for (const [pi, period] of periods.entries()) {
+          ensure(96);
           pairGrid([
             [
               `${periodLabels[kind]} ${pi + 1}`,
               `${period.start || "—"} às ${period.end || "—"}`,
             ],
             ["Pausa", `${period.pauseMinutes || "0"} min`],
+            ...(data.formRevision === 2 ||
+            period.odometerStart ||
+            period.odometerEnd
+              ? ([
+                  ["KM inicial", period.odometerStart],
+                  ["KM final", period.odometerEnd],
+                ] as [string, unknown][])
+              : []),
           ]);
+        }
       }
       pairGrid([
         ["Trabalho", `${ownTotals.work} min`],
@@ -474,55 +574,93 @@ export async function createReportPdf(
     },
     { work: 0, travel: 0, km: 0 },
   );
-  ensure(42);
+  const summaryText = `Trabalho ${minutesAsHours(total.work)}  •  Deslocamento ${minutesAsHours(total.travel)}  •  KM ${total.km}`;
+  doc.font("Helvetica").fontSize(9);
+  const summaryHeight =
+    24 + doc.heightOfString(summaryText, { width: width - 24, lineGap: 2 }) + 8;
+  ensure(summaryHeight + 12);
   const summaryY = doc.y;
-  doc.rect(MARGIN, summaryY, width, 23).fill("#f4f1e8");
-  doc.rect(MARGIN, summaryY, 4, 23).fill(GOLD);
+  doc.rect(MARGIN, summaryY, width, summaryHeight).fill("#f4f1e8");
+  doc.rect(MARGIN, summaryY, 4, summaryHeight).fill(GOLD);
   doc
     .font("Helvetica-Bold")
-    .fontSize(8)
+    .fontSize(8.5)
     .fillColor(NAVY)
-    .text("RESUMO DE HORAS E DESLOCAMENTO", MARGIN + 11, summaryY + 4, {
+    .text("RESUMO DE HORAS E DESLOCAMENTO", MARGIN + 12, summaryY + 8, {
       lineBreak: false,
     });
   doc
     .font("Helvetica")
-    .fontSize(8)
+    .fontSize(9)
     .fillColor("#333333")
-    .text(
-      `Trabalho ${minutesAsHours(total.work)}  •  Deslocamento ${minutesAsHours(total.travel)}  •  KM ${total.km}`,
-      MARGIN + 11,
-      summaryY + 13,
-      { lineBreak: false },
-    );
-  doc.y = summaryY + 30;
+    .text(summaryText, MARGIN + 12, summaryY + 24, {
+      width: width - 24,
+      lineGap: 2,
+    });
+  doc.y = summaryY + summaryHeight + 12;
 
-  section("H", "Status final");
+  section("Status final");
   pairGrid([
     ["Atendimento concluído", data.concluded],
     ["Equipamento liberado", data.released],
-    ["Fotos enviadas", data.photosSent],
+    [
+      "Status do documento",
+      record.status === "finalized" ? "Finalizado" : "Rascunho",
+    ],
   ]);
-  textBlock(data.observations, { bold: true });
-  ensure(108);
-  const signatureY = doc.y;
-  const signatureGap = 10;
+  if (data.observations?.trim()) textBlock(data.observations, { bold: true });
+  const signatureGap = 16;
   const signatureWidth = (width - signatureGap) / 2;
-  const signatures: Array<[string, Media | undefined]> = [
-    ["Assinatura do técnico", data.technicianSignature],
-    ["Assinatura do cliente", data.clientSignature],
+  const signatures: Array<[string, Media | undefined, string, string]> = [
+    [
+      "Assinatura do técnico",
+      data.technicianSignature,
+      record.payload.technicianSnapshot?.name || record.technicianName || "",
+      "Técnico",
+    ],
+    [
+      "Assinatura do cliente",
+      data.clientSignature,
+      data.requester ||
+        record.payload.clientSnapshot?.name ||
+        record.clientName ||
+        "",
+      "Representante do cliente",
+    ],
   ];
+  const captions = signatures.map(([, signature, name, role]) =>
+    signature
+      ? [
+          signature.signerName || name || "Nome não registrado",
+          role,
+          signatureDateTime(signature.createdAt),
+        ]
+          .filter(Boolean)
+          .join("\n")
+      : "",
+  );
+  doc.font("Helvetica").fontSize(8.5);
+  const signatureHeight = Math.max(
+    124,
+    ...captions.map(
+      (caption) =>
+        105 +
+        doc.heightOfString(caption, { width: signatureWidth - 24, lineGap: 2 }),
+    ),
+  );
+  ensure(signatureHeight + 20);
+  const signatureY = doc.y + 10;
   for (const [index, [label, signature]] of signatures.entries()) {
     const x = MARGIN + index * (signatureWidth + signatureGap);
     doc
-      .roundedRect(x, signatureY, signatureWidth, 88, 3)
+      .roundedRect(x, signatureY, signatureWidth, signatureHeight, 3)
       .lineWidth(0.6)
-      .stroke(GOLD);
+      .stroke("#d4d4d8");
     doc
       .font("Helvetica-Bold")
-      .fontSize(7)
+      .fontSize(8)
       .fillColor(NAVY)
-      .text(label.toUpperCase(), x + 8, signatureY + 7, {
+      .text(label.toUpperCase(), x + 12, signatureY + 12, {
         width: signatureWidth - 16,
         align: "center",
         lineBreak: false,
@@ -530,8 +668,8 @@ export async function createReportPdf(
     const match = signature?.uri.match(/^\/api\/media\/([a-f0-9-]{36})$/);
     if (match) {
       const bytes = await storage.read(mediaStorageKey(match[1]));
-      doc.image(bytes, x + 12, signatureY + 18, {
-        fit: [signatureWidth - 24, 50],
+      doc.image(bytes, x + 16, signatureY + 28, {
+        fit: [signatureWidth - 32, 54],
         align: "center",
         valign: "center",
       });
@@ -540,26 +678,40 @@ export async function createReportPdf(
         .font("Helvetica-Oblique")
         .fontSize(8)
         .fillColor("#888888")
-        .text("Não informada", x + 8, signatureY + 42, {
+        .text("Não informada", x + 12, signatureY + 49, {
           width: signatureWidth - 16,
           align: "center",
           lineBreak: false,
         });
     }
     doc
-      .moveTo(x + 12, signatureY + 72)
-      .lineTo(x + signatureWidth - 12, signatureY + 72)
+      .moveTo(x + 16, signatureY + 90)
+      .lineTo(x + signatureWidth - 16, signatureY + 90)
       .strokeColor("#999999")
       .lineWidth(0.4)
       .stroke();
+    if (captions[index])
+      doc
+        .font("Helvetica")
+        .fontSize(8.5)
+        .fillColor("#222222")
+        .text(captions[index], x + 12, signatureY + 99, {
+          width: signatureWidth - 24,
+          align: "center",
+          lineGap: 2,
+        });
   }
-  doc.y = signatureY + 96;
+  doc.y = signatureY + signatureHeight + 8;
 
   const range = doc.bufferedPageRange();
   for (let i = 0; i < range.count; i++) {
     doc.switchToPage(i);
-    if (i > 0) pageHeader();
+    // Draw chrome once, including pages created automatically by long text.
+    const bottomMargin = doc.page.margins.bottom;
+    doc.page.margins.bottom = 0;
+    pageHeader(i === 0);
     footer(i + 1, range.count);
+    doc.page.margins.bottom = bottomMargin;
   }
   doc.end();
   return finished;

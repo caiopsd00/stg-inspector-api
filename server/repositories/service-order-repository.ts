@@ -11,6 +11,7 @@ import {
   entryFromRow,
   eqSnapshot,
   snap,
+  vehicleSnap,
   type RecordFilter,
 } from "./record-query.js";
 import {
@@ -32,6 +33,7 @@ import {
   stamp,
   mediaDTO,
 } from "../relational-utils.js";
+import { periodColumns, periodFromRow } from "./schedule-columns.js";
 
 export async function readServiceOrders(
   db: DB,
@@ -48,6 +50,9 @@ export async function readServiceOrders(
       return f ? mediaDTO(f) : undefined;
     };
     const payload = {
+      ...(r.form_revision === 2 ? { formRevision: 2 } : {}),
+      primaryTechnicianCharged: yesNo(team[0]?.charged),
+      vehicleSnapshot: vehicleSnap(r),
       type: r.type,
       operator: r.operator,
       requester: r.requester,
@@ -58,12 +63,17 @@ export async function readServiceOrders(
         .map((t) => t.technician_id),
       additionalTechnicians: team
         .slice(1)
-        .map((t) => ({ technicianId: t.technician_id, role: t.role })),
+        .map((t) => ({
+          technicianId: t.technician_id,
+          role: t.role,
+          ...(t.charged == null ? {} : { charged: yesNo(t.charged) }),
+        })),
       teamSnapshot: team.map((t) => ({
         technicianId: t.technician_id,
         role: t.role,
         name: t.technician_name,
         identifier: t.technician_cpf,
+        charged: yesNo(t.charged),
       })),
       auxiliaryNames: team
         .filter((t) => t.role === "auxiliary")
@@ -78,6 +88,7 @@ export async function readServiceOrders(
             id: s.id,
             description: s.description,
             notes: s.notes,
+            ...(s.completed == null ? {} : { completed: yesNo(s.completed) }),
             photos: files.filter((f) => f.service_id === s.id).map(mediaDTO),
           })),
       })),
@@ -112,16 +123,7 @@ export async function readServiceOrders(
                     (p) =>
                       p.day_id === d.id && p.technician_id === x.technician_id,
                   )
-                  .map((p) => ({
-                    id: p.id,
-                    kind: p.kind,
-                    start: time(p.start_time),
-                    end: time(p.end_time),
-                    pauseMinutes:
-                      p.pause_minutes == null
-                        ? ""
-                        : String(Number(p.pause_minutes)),
-                  })),
+                  .map(periodFromRow),
               }))
           : undefined,
         odometerStart: reading(d, "odometer_start"),
@@ -142,16 +144,7 @@ export async function readServiceOrders(
         },
         periods: own("service_order_day_periods")
           .filter((period) => period.day_id === d.id)
-          .map((period) => ({
-            id: period.id,
-            kind: period.kind,
-            start: time(period.start_time),
-            end: time(period.end_time),
-            pauseMinutes:
-              period.pause_minutes == null
-                ? ""
-                : String(Number(period.pause_minutes)),
-          })),
+          .map(periodFromRow),
       })),
       concluded: yesNo(r.concluded),
       released: yesNo(r.released),
@@ -205,7 +198,9 @@ export async function saveServiceOrder(
     ...readingColumns("hourmeter_upper", eq.hourmeterUpper),
     concluded: bool(p.concluded),
     released: bool(p.released),
-    photos_sent: bool(p.photosSent),
+    photos_sent: bool(
+      p.formRevision === 2 ? before?.payload.photosSent : p.photosSent,
+    ),
     observations: p.observations,
   });
   // Replace only this aggregate's children; files themselves are not deleted.
@@ -235,6 +230,7 @@ export async function saveServiceOrder(
       technician_id: member.technicianId,
       position,
       role: member.role,
+      charged: bool(member.charged),
       technician_name: snapshot?.name || person!.name,
       technician_cpf: snapshot?.identifier || person!.identifier,
     });
@@ -255,6 +251,7 @@ export async function saveServiceOrder(
         position: spos,
         description: s.description,
         notes: s.notes,
+        completed: bool(s.completed),
       });
       for (const [fpos, f] of s.photos.entries())
         await fileLink(
@@ -329,12 +326,8 @@ export async function saveServiceOrder(
       await insert(db, "service_order_day_periods", {
         ...parent,
         day_id: day.id,
-        id: period.id,
         position,
-        kind: period.kind,
-        start_time: nullable(period.start),
-        end_time: nullable(period.end),
-        pause_minutes: nullable(period.pauseMinutes),
+        ...periodColumns(period),
       });
     for (const [position, person] of (day.participants || []).entries()) {
       await insert(db, "service_order_day_participants", {
@@ -354,11 +347,7 @@ export async function saveServiceOrder(
           day_id: day.id,
           technician_id: person.technicianId,
           position,
-          id: period.id,
-          kind: period.kind,
-          start_time: nullable(period.start),
-          end_time: nullable(period.end),
-          pause_minutes: nullable(period.pauseMinutes),
+          ...periodColumns(period),
         });
     }
   }

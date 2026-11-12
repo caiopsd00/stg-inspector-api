@@ -1,5 +1,31 @@
 # Validação da API para o piloto local — 05/11/2026
 
+## Documento de inspeção — 12/11/2026
+
+- Build da API e do web, 49 testes unitários da API com conversão real de PDF,
+  20 testes do web, 12 testes/subtestes de integração e E2E no Chrome aprovados.
+- Cliente/CNPJ, marca, placa e frota, totais por dia e gerais e todas as fotos
+  complementares verificados no DOCX, que é a fonte do PDF. CPFs e título
+  repetido de tipo não são reinseridos.
+- Migration 007 aditiva ensaiada em banco novo e com dados anteriores;
+  identificadores legados não são inferidos do cadastro atual.
+
+## Revisão 006 — 10/11/2026
+
+- Build da API e do web, 48 testes unitários da API (incluindo conversão real
+  de PDF), 20 testes do web e 12 testes/subtestes de integração aprovados.
+- Migration validada em banco novo e sobre dados da 005: login, equipe,
+  serviços, KM diário, períodos e assinatura históricos preservados.
+- E2E no Chrome com PostgreSQL descartável: Técnico + ADM, veículo e locadora,
+  relatório com equipe e carona, inspeção individual, assinaturas e PDFs.
+- Regressões web verificadas: editar outro usuário sem alterar a sessão do ADM,
+  grupo e subitem de serviço, capitalização preservada e indicadores de teclado
+  numérico nos campos pertinentes.
+- Ensaio local do Compose de produção: limites da API, PDFs reais e
+  persistência dos volumes após recriar os containers. Sem acesso à VPS.
+
+## Ensaios de 05/11/2026
+
 Alvo: VPS Hostinger KVM 1, Ubuntu 24.04, 1 vCPU, 4 GB RAM e 50 GB SSD.
 Os ensaios abaixo foram executados localmente; a instalação na VPS ainda precisa
 ser feita com o domínio e as credenciais de produção.

@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { promisify } from "node:util";
 import type { Request, Response, NextFunction } from "express";
 import { pool } from "./db.js";
+import type { UserRole } from "../contracts/domain.js";
 const scrypt = promisify(crypto.scrypt);
 export const sha = (s: string | Buffer) =>
   crypto.createHash("sha256").update(s).digest("hex");
@@ -23,7 +24,7 @@ export type User = {
   id: string;
   name: string;
   email: string;
-  role: "admin" | "technician";
+  role: UserRole;
 };
 declare global {
   namespace Express {

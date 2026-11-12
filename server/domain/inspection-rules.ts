@@ -1,5 +1,10 @@
 import { templateInspectionSections } from "../../contracts/inspection-template.js";
 import type { Inspection } from "../../contracts/types.js";
+import {
+  hasDayData,
+  readingIssue,
+  validateSchedule,
+} from "../../contracts/domain.js";
 import { fail } from "../relational-utils.js";
 
 export function validateInspection(inspection: Inspection, finalized: boolean) {
@@ -9,6 +14,19 @@ export function validateInspection(inspection: Inspection, finalized: boolean) {
     !Array.isArray(inspection.sections)
   )
     throw fail(422, "Estrutura da inspeção inválida.");
+  try {
+    validateSchedule(
+      inspection.days || [],
+      finalized,
+      inspection.formRevision === 2,
+    );
+    for (const key of ["006", "007", "hourmeterUpper"])
+      if (readingIssue(inspection.documentFields[key]))
+        throw Error("KM e horímetros devem ser números não negativos ou N/A.");
+  } catch (error) {
+    throw fail(422, (error as Error).message);
+  }
+  if (inspection.days) inspection.days = inspection.days.filter(hasDayData);
   const items = inspection.sections.flatMap((section) => section.items || []);
   const expected = templateInspectionSections.flatMap((section) =>
     section.items.map((item) => item.code),
@@ -30,7 +48,7 @@ export function validateInspection(inspection: Inspection, finalized: boolean) {
   if (
     finalized &&
     (items.some((item) => !item.situation) ||
-      (!inspection.signature?.uri &&
+      ((inspection.formRevision === 2 || !inspection.signature?.uri) &&
         (!inspection.technicianSignature?.uri ||
           !inspection.clientSignature?.uri)))
   )
@@ -40,7 +58,7 @@ export function validateInspection(inspection: Inspection, finalized: boolean) {
     );
   if (
     finalized &&
-    !inspection.signature?.uri &&
+    (inspection.formRevision === 2 || !inspection.signature?.uri) &&
     !["Aprovada", "Rejeitada"].includes(inspection.documentFields["011"])
   )
     throw fail(422, "Selecione o resultado da vistoria para finalizar.");

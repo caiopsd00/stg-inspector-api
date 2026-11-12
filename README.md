@@ -6,12 +6,14 @@ Web: stg-system-web. Mobile: stg-inspector-mobile. STG/Supabase e Nex são separ
 Conferência V0/proposta e correções de 09/10/2026:
 matriz de funcionalidades, testes e limites na documentação local, fora deste repositório.
 Esta revisão exige as migrations aditivas `002_schedule_periods.sql`,
-`003_day_participants.sql`, `004_user_technician_invariant.sql` e
-`005_inspection_signers_and_capacity.sql`, sem reset nem
-recriação do login. Pare a API, execute `npm run db:migrate`, reinicie a API e
-atualize web/mobile juntos (contrato 4). Clientes antigos são impedidos de gravar
-para não descartar os períodos adicionais; rascunhos offline legados continuam
-compatíveis após atualizar o mobile. Não apague os dados locais.
+`003_day_participants.sql`, `004_user_technician_invariant.sql`,
+`005_inspection_signers_and_capacity.sql`, `006_workflow_improvements.sql` e
+`007_inspection_equipment_identity.sql`, sem
+reset nem recriação do login. No ambiente local, pare a API, execute
+`npm run db:migrate` e reinicie a API com o web atualizado. No Compose de
+produção, a API aplica a migration ao iniciar. Esta revisão atualiza API e web;
+o contrato 4 é mantido. Clientes sem suporte à nova revisão continuam operando
+registros legados, mas não podem sobrescrever registros já salvos pelo novo web.
 
 `service_order_day_periods` guarda cada período do dia em colunas relacionais
 (tipo, início, fim e pausa em minutos), com FK para `service_order_days`.
@@ -48,11 +50,13 @@ Na pasta stg-inspector-api, na primeira configuração:
 Se a API Docker estiver ligada, pare somente ela com `docker compose stop api`.
 Não execute as duas APIs na porta 3333 ao mesmo tempo.
 
-create:admin pede e-mail, nome, CPF e senha oculta (mínimo 10 caracteres).
-Não existe senha padrão nem seed de clientes, técnicos ou equipamentos. Toda
-conta de login recebe também um cadastro técnico com o mesmo nome e CPF. No web,
-administradores criam contas pela aba Cadastros. O comando de
-terminal cria ou vincula o técnico na mesma transação do usuário.
+`create:admin` pede e-mail, nome e senha oculta (mínimo 10 caracteres).
+Não existe senha padrão nem seed de clientes, técnicos ou equipamentos. Só os
+perfis **Técnico** e **Técnico + ADM** exigem CPF e geram/vinculam cadastro técnico.
+No web, quem administra contas usa **Cadastros**. O administrador puro mantém
+acesso à gestão, mas não é listado como técnico. A migration desativa apenas o
+cadastro técnico vinculado a administradores puros; preserva usuários, sessões
+e histórico. Quem também atua em campo deve receber **Técnico + ADM**.
 Usuários não administradores editam os próprios nome, CPF, e-mail e senha por
 `GET/PUT /api/profile`, confirmando a senha atual. O endpoint não aceita mudança
 de perfil de acesso; a listagem e edição de outros usuários continuam
@@ -122,12 +126,23 @@ O primeiro profissional é Técnico; os demais podem ser Técnico ou Auxiliar.
 O filtro considera a equipe inteira. Snapshots em colunas preservam nomes,
 documentos, equipamento e peças do relatório histórico. KM e horímetros
 pertencem ao atendimento, nunca ao cadastro permanente do equipamento.
-O cronograma registra KM por dia; horímetros ficam somente em Equipamento.
+Nos formulários atuais, o cronograma registra KM inicial e final por período
+(valor, inclusive zero, ou N/A). Leituras diárias antigas continuam disponíveis
+como histórico. O cronograma da inspeção é individual. Horímetros ficam em
+Equipamento. Início de preenchimento, primeiro salvamento e última atualização
+são registrados no servidor. Assinaturas novas registram nome e instante no
+servidor, separadamente por signatário.
 O checklist oficial está no código e suas 141 respostas são linhas da inspeção.
 Na inspeção, capacidade nominal pertence ao cadastro do equipamento; o resultado
 é Aprovada ou Rejeitada, e o documento traz assinaturas separadas do técnico e
 do cliente. A migration 005 preserva assinaturas antigas e aproveita a última
 capacidade registrada em cada equipamento para iniciar seu cadastro.
+O modelo de inspeção inclui cliente/CNPJ, marca, placa e frota separadas,
+totais líquidos por dia e do cronograma e todos os registros fotográficos
+complementares. Não imprime CPFs nem o título repetido do tipo do equipamento.
+A migration 007 adiciona os identificadores ao snapshot da inspeção, sem reset.
+Inspeções antigas sem dados separados mantêm a placa/frota histórica combinada;
+não são preenchidas a partir de um cadastro que pode ter mudado depois.
 
 ### Reset local explícito — APAGA os dados
 
@@ -187,10 +202,11 @@ QA nunca cria usuários no banco de uso.
 
 ## Usuários e operação
 
-USER_ROLE=technician npm run create:user
+    USER_ROLE=technician npm run create:user
+    USER_ROLE=technician_admin npm run create:user
 
-`USER_CPF` e `USER_NAME` podem ser informados pelo ambiente; sem isso, o comando
-pergunta os dados no terminal. Reexecutar create:admin/create:user com o mesmo
+O CPF é solicitado somente para perfis técnicos. `USER_CPF` e `USER_NAME` podem
+ser informados pelo ambiente. Reexecutar `create:admin`/`create:user` com o mesmo
 e-mail redefine senha/perfil e atualiza o vínculo técnico; revoga sessões.
 Faça conscientemente.
 

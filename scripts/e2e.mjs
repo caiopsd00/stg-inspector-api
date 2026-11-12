@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import sharp from "sharp";
+import JSZip from "jszip";
 import { chromium } from "playwright";
 if (!process.env.DATABASE_URL?.endsWith("/brlift_test"))
   throw Error("Defina DATABASE_URL para brlift_test.");
@@ -17,15 +18,15 @@ const { pool } = await import("../dist/server/db.js");
 const { migrate } = await import("../dist/server/migrate.js");
 const { createUserAndTechnician } = await import("../dist/server/users.js");
 const { createApp } = await import("../dist/server/app.js");
-const { createTemplateSections } = await import("../dist/contracts/inspection-template.js");
+const { createTemplateSections } =
+  await import("../dist/contracts/inspection-template.js");
 await migrate();
-const tag = crypto.randomUUID().slice(0, 8),
-  email = "qa-" + tag + "@example.test",
+const tag = crypto.randomUUID().slice(0, 8).toUpperCase(),
+  email = "qa-" + tag.toLowerCase() + "@example.test",
   password = crypto.randomBytes(18).toString("hex");
 await createUserAndTechnician({
   name: "QA BR LIFT",
   email,
-  cpf: String(crypto.randomInt(10_000_000_000, 99_999_999_999)),
   password,
   role: "admin",
 });
@@ -93,26 +94,145 @@ try {
   await page.getByLabel("Senha", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Entrar", exact: true }).click();
   await page
+    .getByRole("button", { name: "Relatório Técnico", exact: true })
+    .waitFor();
+  await page.getByRole("button", { name: "Cadastros", exact: true }).click();
+  await page
+    .getByRole("button", { name: "+ Adicionar usuário", exact: true })
+    .click();
+  const userModal = page.getByRole("dialog", {
+    name: "Adicionar usuário",
+    exact: true,
+  });
+  await userModal
+    .getByLabel("Perfil de acesso", { exact: true })
+    .selectOption("admin");
+  assert.equal(await userModal.getByLabel("CPF", { exact: true }).count(), 0);
+  await userModal
+    .getByLabel("Perfil de acesso", { exact: true })
+    .selectOption({ label: "Técnico + ADM" });
+  const cpf = userModal.getByLabel("CPF", { exact: true });
+  const cpfDigits = String(crypto.randomInt(10_000_000_000, 99_999_999_999));
+  await cpf.fill(cpfDigits);
+  assert.match(await cpf.inputValue(), /^\d{3}\.\d{3}\.\d{3}-\d{2}$/);
+  assert.equal(await cpf.getAttribute("inputmode"), "numeric");
+  await userModal
+    .getByLabel("Nome completo", { exact: true })
+    .fill("Técnico adm QA " + tag);
+  await userModal
+    .getByLabel("E-mail de acesso", { exact: true })
+    .fill(`tech-admin-${tag.toLowerCase()}@example.test`);
+  await userModal
+    .getByLabel("Senha inicial", { exact: true })
+    .fill(crypto.randomBytes(18).toString("hex"));
+  await userModal
+    .getByRole("button", { name: "Criar usuário", exact: true })
+    .click();
+  await userModal.waitFor({ state: "hidden" });
+  assert.ok(
+    (
+      await page.evaluate(
+        async () =>
+          (await (await fetch("/api/catalog/technicians")).json()).items,
+      )
+    ).some((item) => item.identifier === cpfDigits),
+  );
+  const otherUserCard = page
+    .locator(".br-user-card")
+    .filter({ hasText: `tech-admin-${tag.toLowerCase()}@example.test` });
+  const ownUserCard = page.locator(".br-user-card").filter({ hasText: email });
+  const identityBefore = await page.evaluate(
+    async () => (await (await fetch("/api/auth/me")).json()).user,
+  );
+  await otherUserCard
+    .getByRole("button", { name: "Editar", exact: true })
+    .click();
+  const editUser = page.getByRole("dialog", {
+    name: "Editar usuário",
+    exact: true,
+  });
+  await editUser
+    .getByLabel("Perfil de acesso", { exact: true })
+    .selectOption("technician");
+  await editUser
+    .getByRole("button", { name: "Salvar alterações", exact: true })
+    .click();
+  await editUser.waitFor({ state: "hidden" });
+  assert.equal(
+    await page.getByRole("button", { name: "Cadastros", exact: true }).count(),
+    1,
+  );
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Editar perfil", exact: true })
+      .count(),
+    0,
+  );
+  await ownUserCard.locator(".br-user-you").waitFor();
+  assert.equal(await otherUserCard.locator(".br-user-you").count(), 0);
+  assert.equal(
+    await otherUserCard.getByText("Técnico", { exact: true }).count(),
+    1,
+  );
+  assert.equal(
+    await ownUserCard.getByText("Administrador", { exact: true }).count(),
+    1,
+  );
+  const identityAfter = await page.evaluate(
+    async () => (await (await fetch("/api/auth/me")).json()).user,
+  );
+  assert.deepEqual(identityAfter, identityBefore);
+  await ownUserCard
+    .getByRole("button", { name: "Editar", exact: true })
+    .click();
+  await editUser
+    .getByLabel("Nome completo", { exact: true })
+    .fill("Admin QA revisado " + tag);
+  await editUser
+    .getByRole("button", { name: "Salvar alterações", exact: true })
+    .click();
+  await editUser.waitFor({ state: "hidden" });
+  await ownUserCard
+    .getByText("ADMIN QA REVISADO " + tag, { exact: false })
+    .waitFor();
+  assert.equal(
+    await page.getByRole("button", { name: "Cadastros", exact: true }).count(),
+    1,
+  );
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Editar perfil", exact: true })
+      .count(),
+    0,
+  );
+  console.log(
+    "QA: editar outro usuário preserva a identidade e o acesso administrativo sem refresh",
+  );
+  await page
+    .getByRole("button", { name: "Relatório Técnico", exact: true })
+    .click();
+  await page
     .getByRole("button", { name: "+ Novo atendimento", exact: true })
     .click();
   await page
-    .getByLabel("Número identificador (único)", { exact: true })
-    .fill("QA-AT-" + tag);
-  await page
-    .getByLabel("Número identificador (único)", { exact: true })
-    .press("Tab");
-  await page.locator('input[aria-label="Data: dia"]:focus').waitFor();
+    .getByLabel("O.S. OMIE", { exact: true })
+    .fill("qa-at-" + tag.toLowerCase());
+  await page.getByLabel("O.S. OMIE", { exact: true }).press("Tab");
   assert.equal(
     await page
-      .getByLabel("Data: dia", { exact: true })
-      .evaluate((el) => el === document.activeElement),
-    true,
+      .getByLabel("O.S. OMIE", { exact: true })
+      .getAttribute("inputmode"),
+    "numeric",
   );
-  await page.getByLabel("Data: dia", { exact: true }).press("Escape");
+  await page.locator('select[aria-label="Cliente"]:focus').waitFor();
+  assert.equal(
+    await page.getByLabel("O.S. OMIE", { exact: true }).inputValue(),
+    "QA-AT-" + tag,
+  );
   await openSection("A. Identificação");
   assert.equal(
     await page
-      .getByLabel("Número identificador (único)", { exact: true })
+      .getByLabel("O.S. OMIE", { exact: true })
       .evaluate((el) => el.closest("section")),
     null,
   );
@@ -146,10 +266,11 @@ try {
     name: "Tipo de atendimento",
     exact: true,
   });
-  await typeGroup
-    .getByRole("radio", { name: "Interno (Galpão BR LIFT)", exact: true })
-    .check();
-  assert.equal(await page.getByLabel("Local", { exact: true }).count(), 0);
+  assert.equal(await page.getByLabel("Data: dia", { exact: true }).count(), 0);
+  for (const type of ["Interno (Galpão BR LIFT)", "Remoto"]) {
+    await typeGroup.getByRole("radio", { name: type, exact: true }).check();
+    assert.equal(await page.getByLabel("Local", { exact: true }).count(), 0);
+  }
   await openSection("E. Cronograma de atendimento");
   await page
     .getByRole("button", { name: "+ Dia de atendimento", exact: true })
@@ -162,48 +283,61 @@ try {
       .count(),
     0,
   );
-  await page.getByRole("button", { name: "Remover dia", exact: true }).click();
-  await openSection("A. Identificação");
-  await typeGroup.getByRole("radio", { name: "Externo", exact: true }).check();
   // The whole date surface opens the calendar without stealing segment focus.
-  const dateGroup = page.getByRole("group", { name: "Data", exact: true });
+  const dateGroup = page.getByRole("group", {
+    name: "Data do dia",
+    exact: true,
+  });
+  for (const segment of ["dia", "mês", "ano"])
+    assert.equal(
+      await page
+        .getByLabel("Data do dia: " + segment, { exact: true })
+        .getAttribute("inputmode"),
+      "numeric",
+    );
   await dateGroup.click({ position: { x: 220, y: 20 } });
   const calendar = page.getByRole("dialog", {
-    name: "Calendário: Data",
+    name: "Calendário: Data do dia",
     exact: true,
   });
   await calendar.waitFor();
-  await page.getByLabel("Data: dia", { exact: true }).click();
+  await page.getByLabel("Data do dia: dia", { exact: true }).click();
   assert.equal(
     await page
-      .getByLabel("Data: dia", { exact: true })
+      .getByLabel("Data do dia: dia", { exact: true })
       .evaluate((el) => el.selectionEnd - el.selectionStart),
     2,
   );
-  await page.getByLabel("Data: dia", { exact: true }).pressSequentially("02");
+  await page
+    .getByLabel("Data do dia: dia", { exact: true })
+    .pressSequentially("02");
   assert.equal(
     await page
-      .getByLabel("Data: mês", { exact: true })
+      .getByLabel("Data do dia: mês", { exact: true })
       .evaluate((el) => el === document.activeElement),
     true,
   );
-  await page.getByLabel("Data: mês", { exact: true }).pressSequentially("10");
+  await page
+    .getByLabel("Data do dia: mês", { exact: true })
+    .pressSequentially("10");
   assert.equal(
     await page
-      .getByLabel("Data: ano", { exact: true })
+      .getByLabel("Data do dia: ano", { exact: true })
       .evaluate((el) => el === document.activeElement),
     true,
   );
-  await page.getByLabel("Data: ano", { exact: true }).pressSequentially("2026");
+  await page
+    .getByLabel("Data do dia: ano", { exact: true })
+    .pressSequentially("2026");
   await calendar
     .getByRole("button", { name: "03/10/2026", exact: true })
     .click();
   assert.equal(
-    await page.getByLabel("Data: dia", { exact: true }).inputValue(),
+    await page.getByLabel("Data do dia: dia", { exact: true }).inputValue(),
     "03",
   );
   await page
-    .getByRole("button", { name: "Abrir calendário: Data", exact: true })
+    .getByRole("button", { name: "Abrir calendário: Data do dia", exact: true })
     .click();
   await calendar
     .getByRole("button", { name: "Mês anterior", exact: true })
@@ -214,41 +348,44 @@ try {
   await calendar
     .getByRole("button", { name: "02/10/2026", exact: true })
     .click();
-  await page.getByLabel("Data: ano", { exact: true }).press("Escape");
+  await page.getByLabel("Data do dia: ano", { exact: true }).press("Escape");
   assert.equal(await calendar.count(), 0);
-  await page.getByLabel("Data: dia", { exact: true }).fill("31");
-  await page.getByLabel("Data: mês", { exact: true }).fill("04");
+  await page.getByLabel("Data do dia: dia", { exact: true }).fill("31");
+  await page.getByLabel("Data do dia: mês", { exact: true }).fill("04");
   assert.equal(await dateGroup.getAttribute("aria-invalid"), "true");
-  assert.equal(
-    await page.locator('[data-fold="A"]').getAttribute("data-status"),
-    "invalid",
-  );
-  await page.getByLabel("Data: dia", { exact: true }).fill("29");
-  await page.getByLabel("Data: mês", { exact: true }).fill("02");
-  await page.getByLabel("Data: ano", { exact: true }).fill("2024");
+  await page.getByLabel("Data do dia: dia", { exact: true }).fill("29");
+  await page.getByLabel("Data do dia: mês", { exact: true }).fill("02");
+  await page.getByLabel("Data do dia: ano", { exact: true }).fill("2024");
   assert.equal(await dateGroup.getAttribute("aria-invalid"), "false");
-  await page.getByLabel("Data: ano", { exact: true }).fill("2025");
+  await page.getByLabel("Data do dia: ano", { exact: true }).fill("2025");
   assert.equal(await dateGroup.getAttribute("aria-invalid"), "true");
-  await page.getByLabel("Data: dia", { exact: true }).fill("02");
-  await page.getByLabel("Data: mês", { exact: true }).fill("10");
-  await page.getByLabel("Data: ano", { exact: true }).fill("2026");
+  await page.getByLabel("Data do dia: dia", { exact: true }).fill("02");
+  await page.getByLabel("Data do dia: mês", { exact: true }).fill("10");
+  await page.getByLabel("Data do dia: ano", { exact: true }).fill("2026");
   await page.screenshot({
     path: path.join(output, "calendario-digitacao.png"),
   });
-  await page.getByLabel("Data: ano", { exact: true }).press("Escape");
+  await page.getByLabel("Data do dia: ano", { exact: true }).press("Escape");
+  await page.getByRole("button", { name: "Remover dia", exact: true }).click();
+  await openSection("A. Identificação");
+  await typeGroup.getByRole("radio", { name: "Externo", exact: true }).check();
   const doc = String(Date.now()).slice(-11);
   console.log("QA: calendário e indicadores");
   async function catalog(kind, name, identifier, index = 0) {
     await page.getByRole("button", { name: "+ " + kind, exact: true }).click();
     const modal = page.getByRole("dialog", { name: "Cadastro de " + kind });
     await modal.getByLabel("Nome", { exact: true }).fill(name);
-    if (identifier)
-      await modal
-        .getByLabel(kind === "Cliente" ? "CNPJ" : "CPF", { exact: true })
-        .fill(identifier);
-    if (kind === "Equipamento") {
-      await modal.getByLabel("Tipo", { exact: true }).fill("Guindaste");
-      await modal.getByLabel("Modelo", { exact: true }).fill("LTM 1100");
+    if (identifier) {
+      const document = modal.getByLabel(kind === "Cliente" ? "CNPJ" : "CPF", {
+        exact: true,
+      });
+      await document.fill(identifier);
+      assert.match(
+        await document.inputValue(),
+        kind === "Cliente"
+          ? /^\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}$/
+          : /^\d{3}\.\d{3}\.\d{3}-\d{2}$/,
+      );
     }
     await modal
       .getByRole("button", { name: "Salvar cadastro", exact: true })
@@ -256,6 +393,62 @@ try {
     await modal.waitFor({ state: "hidden" });
   }
   await catalog("Cliente", "Cliente QA " + tag, "123" + doc);
+  const clientId = await page
+    .getByLabel("Cliente", { exact: true })
+    .inputValue();
+  await page.getByRole("button", { name: "+ Veículo", exact: true }).click();
+  const vehicleModal = page.getByRole("dialog", {
+    name: "Cadastro de Veículo",
+    exact: true,
+  });
+  await vehicleModal
+    .getByRole("button", { name: "+ Locadora", exact: true })
+    .click();
+  const rentalModal = page.getByRole("dialog", {
+    name: "Cadastro de Locadora",
+    exact: true,
+  });
+  await rentalModal
+    .getByLabel("Nome", { exact: true })
+    .fill("Locadora QA " + tag);
+  await rentalModal
+    .getByRole("button", { name: "Salvar cadastro", exact: true })
+    .click();
+  await rentalModal.waitFor({ state: "hidden" });
+  assert.ok(
+    await vehicleModal.getByLabel("Locadora", { exact: true }).inputValue(),
+  );
+  await vehicleModal
+    .getByLabel("Placa", { exact: true })
+    .fill("qa-" + tag.toLowerCase());
+  const saveVehicle = vehicleModal.getByRole("button", {
+    name: "Salvar cadastro",
+    exact: true,
+  });
+  await saveVehicle.click();
+  await vehicleModal.waitFor({ state: "hidden" });
+  const vehicleId = await page
+    .getByLabel("Veículo", { exact: true })
+    .inputValue();
+  assert.ok(vehicleId);
+  await page
+    .getByRole("button", { name: "Editar veículo", exact: true })
+    .click();
+  await vehicleModal
+    .getByLabel("Modelo (opcional)", { exact: true })
+    .fill("Furgão teste");
+  await vehicleModal
+    .getByLabel("Cor (opcional)", { exact: true })
+    .fill("Branco");
+  await saveVehicle.click();
+  await vehicleModal.waitFor({ state: "hidden" });
+  assert.match(
+    await page
+      .getByLabel("Veículo", { exact: true })
+      .locator("option:checked")
+      .innerText(),
+    /FURGÃO TESTE/,
+  );
   // Entering identification with only the team missing opens the first professional.
   await page
     .getByRole("button", { name: "A. Identificação", exact: true })
@@ -274,6 +467,9 @@ try {
     .locator('select[aria-label="Profissional 1"]')
     .inputValue();
   await page
+    .getByLabel("Serviço cobrado do profissional 1", { exact: true })
+    .selectOption("Sim");
+  await page
     .getByRole("button", { name: "+ Adicionar profissional", exact: true })
     .click();
   await openSection("B. Equipamento");
@@ -289,6 +485,9 @@ try {
     .locator('select[aria-label="Profissional 2"]')
     .inputValue();
   await page
+    .getByLabel("Serviço cobrado do profissional 2", { exact: true })
+    .selectOption("Não");
+  await page
     .getByRole("button", { name: "+ Adicionar profissional", exact: true })
     .click();
   await catalog(
@@ -300,6 +499,9 @@ try {
   await page
     .getByLabel("Função do profissional 3", { exact: true })
     .selectOption("auxiliary");
+  await page
+    .getByLabel("Serviço cobrado do profissional 3", { exact: true })
+    .selectOption("Sim");
   assert.equal(
     await page
       .locator('select[aria-label="Profissional 3"]')
@@ -412,11 +614,7 @@ try {
       "rgb(43, 45, 50)",
     );
   }
-  for (const label of [
-    "KM na data",
-    "Horímetro inferior na data",
-    "Horímetro superior na data",
-  ]) {
+  for (const label of ["KM", "Hor. Inferior", "Hor. Superior"]) {
     assert.equal(
       await eqSection.getByLabel(label, { exact: true }).isEnabled(),
       true,
@@ -440,6 +638,20 @@ try {
   const equipmentModal = page.getByRole("dialog", {
     name: "Cadastro de Equipamento",
   });
+  assert.equal(
+    await equipmentModal
+      .getByLabel("Capacidade nominal", { exact: true })
+      .count(),
+    0,
+  );
+  assert.equal(
+    await eqSection.getByLabel("Capacidade nominal", { exact: true }).count(),
+    0,
+  );
+  assert.equal(
+    await equipmentModal.getByLabel("Nome", { exact: true }).count(),
+    0,
+  );
   await equipmentModal
     .getByRole("group", { name: "Tipo", exact: true })
     .getByRole("radio", { name: "Guindaste", exact: true })
@@ -454,6 +666,12 @@ try {
   await equipmentModal
     .getByLabel("Ano de fabricação", { exact: true })
     .fill("2020");
+  assert.equal(
+    await equipmentModal
+      .getByLabel("Ano de fabricação", { exact: true })
+      .getAttribute("inputmode"),
+    "numeric",
+  );
   await equipmentModal
     .getByRole("button", { name: "Não se aplica: Placa", exact: true })
     .click();
@@ -467,7 +685,7 @@ try {
   assert.ok(equipmentId);
   assert.equal(
     await eqSection.getByLabel("Marca", { exact: true }).inputValue(),
-    "Liebherr",
+    "LIEBHERR",
   );
   assert.equal(
     await eqSection
@@ -484,21 +702,26 @@ try {
       .count(),
     0,
   );
-  await eqSection.getByLabel("KM na data", { exact: true }).fill("-1");
+  await eqSection.getByLabel("KM", { exact: true }).fill("-1");
   await eqSection.getByRole("alert").waitFor();
-  await eqSection.getByLabel("KM na data", { exact: true }).fill("500");
+  await eqSection.getByLabel("KM", { exact: true }).fill("500");
   assert.equal(await eqSection.getByRole("alert").count(), 0);
-  await eqSection
-    .getByLabel("Horímetro inferior na data", { exact: true })
-    .fill("25");
+  await eqSection.getByLabel("Hor. Inferior", { exact: true }).fill("25");
+  for (const label of ["KM", "Hor. Inferior", "Hor. Superior"])
+    assert.equal(
+      await eqSection
+        .getByLabel(label, { exact: true })
+        .getAttribute("inputmode"),
+      "decimal",
+    );
   await eqSection
     .getByRole("button", {
-      name: "Não se aplica: Horímetro superior na data",
+      name: "Não se aplica: Hor. Superior",
       exact: true,
     })
     .click();
   assert.equal(
-    await eqSection.getByLabel("KM na data", { exact: true }).inputValue(),
+    await eqSection.getByLabel("KM", { exact: true }).inputValue(),
     "500",
   );
   const storedEquipment = await page.evaluate(
@@ -522,16 +745,31 @@ try {
   await equipmentModal
     .getByLabel("Modelo", { exact: true })
     .fill("LTM revisado " + tag);
+  assert.equal(
+    await equipmentModal
+      .getByLabel("Capacidade nominal", { exact: true })
+      .count(),
+    0,
+  );
+  const equipmentUpdate = page.waitForRequest(
+    (request) =>
+      request.url().endsWith("/api/catalog/equipment/" + equipmentId) &&
+      request.method() === "PUT",
+  );
   await equipmentModal
     .getByRole("button", { name: "Salvar cadastro", exact: true })
     .click();
   await equipmentModal.waitFor({ state: "hidden" });
   assert.equal(
-    await eqSection.getByLabel("Modelo", { exact: true }).inputValue(),
-    "LTM revisado " + tag,
+    "nominalCapacity" in (await equipmentUpdate).postDataJSON().data,
+    false,
   );
   assert.equal(
-    await eqSection.getByLabel("KM na data", { exact: true }).inputValue(),
+    await eqSection.getByLabel("Modelo", { exact: true }).inputValue(),
+    "LTM REVISADO " + tag,
+  );
+  assert.equal(
+    await eqSection.getByLabel("KM", { exact: true }).inputValue(),
     "500",
   );
   const updatedEquipment = await page.evaluate(
@@ -541,7 +779,19 @@ try {
       ),
     equipmentId,
   );
-  assert.equal(updatedEquipment.data.model, "LTM revisado " + tag);
+  assert.equal(updatedEquipment.data.model, "LTM REVISADO " + tag);
+  assert.equal(
+    await eqSection
+      .getByLabel("Equipamento", { exact: true })
+      .locator("option:checked")
+      .innerText(),
+    `LTM REVISADO ${tag} - SER-${tag}`,
+  );
+  await eqSection.getByLabel("Operador", { exact: true }).fill("Operador QA");
+  assert.equal(
+    await eqSection.getByLabel("Operador", { exact: true }).inputValue(),
+    "OPERADOR QA",
+  );
   await openSection("A. Identificação");
   await page
     .getByRole("button", { name: "Editar cliente", exact: true })
@@ -556,7 +806,7 @@ try {
     equipmentId,
   );
   assert.equal(
-    await eqSection.getByLabel("KM na data", { exact: true }).inputValue(),
+    await eqSection.getByLabel("KM", { exact: true }).inputValue(),
     "500",
   );
   await openSection("B. Equipamento");
@@ -567,11 +817,18 @@ try {
   await openSection("A. Identificação");
   await page.getByLabel("Local", { exact: true }).fill("Oficina BR LIFT");
   // Enter advances simple inputs; Tab opens the next nested branch.
-  await page.getByLabel("Operador", { exact: true }).fill("Operador QA");
-  await page.getByLabel("Operador", { exact: true }).press("Enter");
   assert.equal(
     await page
-      .getByLabel("Solicitante", { exact: true })
+      .locator('[data-fold="A"]')
+      .getByLabel("Operador", { exact: true })
+      .count(),
+    0,
+  );
+  await page.getByLabel("Solicitante", { exact: true }).fill("Solicitante QA");
+  await page.getByLabel("Solicitante", { exact: true }).press("Enter");
+  assert.equal(
+    await page
+      .getByLabel("Local", { exact: true })
       .evaluate((el) => el === document.activeElement),
     true,
   );
@@ -584,7 +841,7 @@ try {
       .evaluate((el) => el === document.activeElement),
     true,
   );
-  await page.getByLabel("Operador", { exact: true }).click();
+  await page.getByLabel("Solicitante", { exact: true }).click();
   assert.equal(
     await page
       .getByRole("button", { name: "Equipe do atendimento", exact: true })
@@ -625,15 +882,62 @@ try {
   await page
     .getByLabel("Descrição do motivo", { exact: true })
     .press("Control+Enter");
+  await openSection("Serviço realizado", "Serviço realizado 1");
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Serviço deste motivo", exact: true })
+      .count(),
+    0,
+  );
+  assert.equal(
+    await page
+      .getByRole("button", { name: "+ Serviço deste motivo", exact: true })
+      .count(),
+    0,
+  );
   await page
-    .getByRole("button", { name: "+ Serviço deste motivo", exact: true })
-    .waitFor();
-  await page
-    .getByRole("button", { name: "+ Serviço deste motivo", exact: true })
-    .click();
-  await page
-    .getByLabel("Serviço realizado", { exact: true })
+    .getByRole("textbox", { name: "Serviço realizado", exact: true })
     .fill("Verificação e ajuste do conjunto");
+  assert.equal(
+    await page
+      .getByRole("textbox", { name: "Serviço realizado", exact: true })
+      .inputValue(),
+    "Verificação e ajuste do conjunto",
+  );
+  assert.equal(
+    await page
+      .getByRole("textbox", { name: "Serviço realizado", exact: true })
+      .getAttribute("autocapitalize"),
+    "none",
+  );
+  await page
+    .getByLabel("Observações do serviço", { exact: true })
+    .fill("Verifique na revisão: peça e cabo sem avarias.");
+  assert.equal(
+    await page
+      .getByLabel("Observações do serviço", { exact: true })
+      .inputValue(),
+    "Verifique na revisão: peça e cabo sem avarias.",
+  );
+  await page
+    .getByLabel("Pendências / próximos passos deste motivo", { exact: true })
+    .fill("Agendar retorno após confirmação do cliente.");
+  assert.equal(
+    await page
+      .getByLabel("Pendências / próximos passos deste motivo", { exact: true })
+      .inputValue(),
+    "Agendar retorno após confirmação do cliente.",
+  );
+  assert.equal(
+    await page
+      .getByLabel("Pendências / próximos passos deste motivo", { exact: true })
+      .getAttribute("autocapitalize"),
+    "none",
+  );
+  await openSection("Serviço realizado", "Serviço realizado 1");
+  await page
+    .getByLabel("Serviço concluído?", { exact: true })
+    .selectOption("Sim");
   const photo = await sharp({
     create: { width: 1000, height: 500, channels: 3, background: "#cda332" },
   })
@@ -654,9 +958,7 @@ try {
       exact: true,
     })
     .click();
-  await page
-    .getByLabel("Número identificador (único)", { exact: true })
-    .click();
+  await page.getByLabel("O.S. OMIE", { exact: true }).click();
   assert.deepEqual(
     await page
       .locator('[data-fold][data-open="true"]')
@@ -690,19 +992,10 @@ try {
   await openSection(
     "C. Motivos, serviços e pendências",
     "Motivo 1",
-    "Serviços deste motivo",
-    "Serviço 1",
+    "Serviço realizado",
+    "Serviço realizado 1",
   );
-  // Only the current repeated item stays expanded; collapsing preserves photos and text.
-  await page
-    .getByRole("button", { name: "+ Serviço deste motivo", exact: true })
-    .click();
-  assert.equal(
-    await page
-      .getByRole("button", { name: "Serviço 1", exact: true })
-      .getAttribute("aria-expanded"),
-    "false",
-  );
+  // Changing sections collapses the old branch without discarding its service.
   await openSection("A. Identificação");
   assert.equal(
     await page
@@ -713,21 +1006,16 @@ try {
       .getAttribute("aria-expanded"),
     "false",
   );
-  await openSection("C. Motivos, serviços e pendências");
-  await page
-    .getByRole("button", { name: "Serviço 2", exact: true, expanded: true })
-    .waitFor();
-  await page
-    .locator("[data-fold-body]:visible")
-    .getByLabel("Serviço realizado", { exact: true })
-    .last()
-    .fill("Segundo serviço");
-  await page
-    .getByRole("button", { name: "Remover serviço", exact: true })
-    .click();
-  await openSection("Serviço 1");
+  await openSection(
+    "C. Motivos, serviços e pendências",
+    "Motivo 1",
+    "Serviço realizado",
+    "Serviço realizado 1",
+  );
   assert.equal(
-    await page.getByLabel("Serviço realizado", { exact: true }).inputValue(),
+    await page
+      .getByRole("textbox", { name: "Serviço realizado", exact: true })
+      .inputValue(),
     "Verificação e ajuste do conjunto",
   );
   assert.equal(
@@ -753,6 +1041,10 @@ try {
       .getAttribute("aria-expanded"),
     "false",
   );
+  await openSection("Serviço realizado", "Serviço realizado 1");
+  await page
+    .getByRole("textbox", { name: "Serviço realizado", exact: true })
+    .fill("Segundo motivo, outro serviço");
   await page
     .getByRole("button", { name: "Remover motivo", exact: true })
     .click();
@@ -811,11 +1103,11 @@ try {
   assert.ok(partId);
   assert.equal(
     await page.getByLabel("Descrição da peça", { exact: true }).inputValue(),
-    "Peça de teste",
+    "PEÇA DE TESTE",
   );
   assert.equal(
     await page.getByLabel("Fornecedor", { exact: true }).inputValue(),
-    "Fornecedor QA",
+    "FORNECEDOR QA",
   );
   await page.getByLabel("Quantidade", { exact: true }).fill("0");
   assert.equal(
@@ -823,8 +1115,14 @@ try {
     "invalid",
   );
   await page.getByLabel("Quantidade", { exact: true }).fill("2");
+  assert.equal(
+    await page
+      .getByLabel("Quantidade", { exact: true })
+      .getAttribute("inputmode"),
+    "decimal",
+  );
   await page
-    .getByLabel("Classificação", { exact: true })
+    .getByLabel("Tipo de serviço", { exact: true })
     .selectOption("replaced");
   await page.getByRole("button", { name: "Editar peça", exact: true }).click();
   await partModal
@@ -843,7 +1141,7 @@ try {
     "2",
   );
   assert.equal(
-    await page.getByLabel("Classificação", { exact: true }).inputValue(),
+    await page.getByLabel("Tipo de serviço", { exact: true }).inputValue(),
     "replaced",
   );
   assert.equal(
@@ -852,11 +1150,11 @@ try {
   );
   assert.equal(
     await page.getByLabel("Descrição da peça", { exact: true }).inputValue(),
-    "Peça revisada",
+    "PEÇA REVISADA",
   );
   assert.equal(
     await page.getByLabel("Fornecedor", { exact: true }).inputValue(),
-    "Fornecedor revisado",
+    "FORNECEDOR REVISADO",
   );
   const storedPart = await page.evaluate(
     async (id) =>
@@ -898,14 +1196,17 @@ try {
       .getByLabel("Descrição da peça", { exact: true })
       .last()
       .inputValue(),
-    "Peça revisada",
+    "PEÇA REVISADA",
   );
   assert.equal(
     await page.getByLabel("Quantidade", { exact: true }).last().inputValue(),
     "1",
   );
   assert.equal(
-    await page.getByLabel("Classificação", { exact: true }).last().inputValue(),
+    await page
+      .getByLabel("Tipo de serviço", { exact: true })
+      .last()
+      .inputValue(),
     "requested",
   );
   await page.getByRole("button", { name: "Remover peça", exact: true }).click();
@@ -952,9 +1253,8 @@ try {
   await page
     .getByLabel("Observações do dia (opcional)", { exact: true })
     .fill("Trânsito intenso na BR-381; atraso de 2h no retorno.");
-  await openSection("Técnico QA " + tag);
-  await page.getByLabel("KM inicial", { exact: true }).fill("100");
-  await page.getByLabel("KM final", { exact: true }).fill("125");
+  await openSection("TÉCNICO QA " + tag);
+  assert.equal(await page.getByLabel("KM inicial", { exact: true }).count(), 0);
   await openSection("Trabalho");
   await page.getByRole("button", { name: "+ Trabalho", exact: true }).click();
   const work = page
@@ -1033,6 +1333,23 @@ try {
   await work
     .getByLabel("Pausa em minutos (opcional)", { exact: true })
     .fill("60");
+  await work.getByLabel("KM inicial", { exact: true }).fill("100");
+  await work.getByLabel("KM final", { exact: true }).fill("125");
+  for (const label of ["KM inicial", "KM final", "Pausa em minutos (opcional)"])
+    assert.equal(
+      await work.getByLabel(label, { exact: true }).getAttribute("inputmode"),
+      "decimal",
+    );
+  for (const label of [
+    "Início: hora",
+    "Início: minuto",
+    "Fim: hora",
+    "Fim: minuto",
+  ])
+    assert.equal(
+      await work.getByLabel(label, { exact: true }).getAttribute("inputmode"),
+      "numeric",
+    );
   async function addPeriod(group, short, index, start, end, pause = "") {
     await openSection(group);
     await page.getByRole("button", { name: "+ " + short, exact: true }).click();
@@ -1056,6 +1373,10 @@ try {
     await panel
       .getByLabel("Pausa em minutos (opcional)", { exact: true })
       .fill(pause);
+    for (const label of ["KM inicial", "KM final"])
+      await panel
+        .getByRole("button", { name: "Não se aplica: " + label, exact: true })
+        .click();
   }
   await addPeriod("Trabalho", "Trabalho", 2, "18:00", "19:00", "15");
   assert.equal(
@@ -1089,7 +1410,7 @@ try {
   );
   await attendance
     .getByRole("checkbox", {
-      name: "Segundo técnico QA " + tag + " (Técnico)",
+      name: "SEGUNDO TÉCNICO QA " + tag + " (Técnico)",
       exact: true,
     })
     .check();
@@ -1130,7 +1451,7 @@ try {
   );
   await attendance
     .getByRole("checkbox", {
-      name: "Técnico QA " + tag + " (Técnico)",
+      name: "TÉCNICO QA " + tag + " (Técnico)",
       exact: true,
     })
     .uncheck();
@@ -1143,7 +1464,7 @@ try {
     await attendance.getByRole("checkbox", { checked: true }).count(),
     1,
   );
-  await openSection("Segundo técnico QA " + tag);
+  await openSection("SEGUNDO TÉCNICO QA " + tag);
   assert.equal(
     await secondPerson
       .getByRole("checkbox", { name: "Mesmo carro", exact: true })
@@ -1157,17 +1478,17 @@ try {
   // Restore the baseline participant, preserving the independent data of the absent one.
   await attendance
     .getByRole("checkbox", {
-      name: "Técnico QA " + tag + " (Técnico)",
+      name: "TÉCNICO QA " + tag + " (Técnico)",
       exact: true,
     })
     .check();
   await attendance
     .getByRole("checkbox", {
-      name: "Segundo técnico QA " + tag + " (Técnico)",
+      name: "SEGUNDO TÉCNICO QA " + tag + " (Técnico)",
       exact: true,
     })
     .uncheck();
-  await openSection("Técnico QA " + tag);
+  await openSection("TÉCNICO QA " + tag);
   assert.ok(
     (await page.locator('[data-fold="E"]').innerText()).includes(
       "525 min de trabalho · 165 min de deslocamento · 25 km",
@@ -1184,9 +1505,10 @@ try {
   );
   await page.getByRole("button", { name: "Remover dia", exact: true }).click();
   await openSection("Dia 1");
-  await openSection("Técnico QA " + tag);
+  await openSection("TÉCNICO QA " + tag);
+  await openSection("Trabalho", "Trabalho 1");
   assert.equal(
-    await page.getByLabel("KM final", { exact: true }).inputValue(),
+    await work.getByLabel("KM final", { exact: true }).inputValue(),
     "125",
   );
   console.log("QA: motivos, serviços, peças e cronograma");
@@ -1210,7 +1532,7 @@ try {
         };
       }),
     );
-    assert.equal(layout.length, 3);
+    assert.equal(layout.length, 2);
     for (const [index, row] of layout.entries()) {
       if (index)
         assert.ok(
@@ -1260,16 +1582,18 @@ try {
     false,
   );
   await page.setViewportSize({ width: 1440, height: 1000 });
-  for (const label of [
-    "Atendimento concluído",
-    "Equipamento liberado",
-    "Fotos enviadas",
-  ])
+  for (const label of ["Atendimento concluído", "Equipamento liberado"])
     await page
       .getByRole("group", { name: label, exact: true })
       .getByRole("radio", { name: "Sim", exact: true })
       .check();
-  async function sign(label) {
+  assert.equal(
+    await page
+      .getByRole("group", { name: "Fotos enviadas", exact: true })
+      .count(),
+    0,
+  );
+  async function sign(label, signerName, exerciseLayout = false) {
     const card = page
       .locator(".br-signature")
       .filter({ has: page.getByRole("heading", { name: label, exact: true }) });
@@ -1277,7 +1601,7 @@ try {
     await card.getByRole("button", { name: "Assinar", exact: true }).click();
     const dialog = page.getByRole("dialog", { name: label, exact: true });
     await dialog.waitFor();
-    if (label === "Assinatura do técnico") {
+    if (exerciseLayout) {
       const portrait = await dialog.boundingBox();
       assert.ok(portrait.width >= 1400, "Editor ocupa a tela inteira");
       await dialog
@@ -1304,6 +1628,9 @@ try {
         "Editor acompanha a orientação paisagem",
       );
     }
+    await dialog
+      .getByLabel("Nome de quem assinou", { exact: true })
+      .fill(signerName);
     const c = dialog.getByLabel("Área para " + label.toLowerCase(), {
       exact: true,
     });
@@ -1314,13 +1641,36 @@ try {
     await page.mouse.move(box.x + 100, box.y + 80, { steps: 6 });
     await page.mouse.move(box.x + 200, box.y + 30, { steps: 6 });
     await page.mouse.up();
+    const captured = page.waitForResponse(
+      (response) =>
+        response.url().endsWith("/api/media") &&
+        response.request().method() === "POST" &&
+        response.status() === 201,
+    );
     await dialog.getByRole("button", { name: "Salvar", exact: true }).click();
     await dialog.waitFor({ state: "hidden" });
     await card.getByAltText(label + " salva", { exact: true }).waitFor();
+    const caption = await card.locator(".br-signature-caption").innerText();
+    assert.ok(caption.includes(signerName.toUpperCase()));
+    assert.match(caption, /\d{2}\/\d{2}\/\d{4}.*\d{2}:\d{2}/);
     await page.setViewportSize({ width: 1440, height: 1000 });
+    return (await (await captured).json()).media;
   }
-  await sign("Assinatura do técnico");
-  await sign("Assinatura do cliente");
+  const techSigned = await sign(
+    "Assinatura do técnico",
+    "Técnico assina",
+    true,
+  );
+  const clientSigned = await sign("Assinatura do cliente", "Representante QA");
+  const clientResigned = await sign(
+    "Assinatura do cliente",
+    "Representante QA revisado",
+  );
+  assert.notEqual(clientSigned.captureId, clientResigned.captureId);
+  assert.ok(
+    clientResigned.createdAt > clientSigned.createdAt &&
+      clientSigned.createdAt > techSigned.createdAt,
+  );
   for (const id of ["A", "B", "C", "D", "E", "F"])
     assert.equal(
       await page
@@ -1336,10 +1686,17 @@ try {
     .getByRole("button", { name: "Finalizar atendimento", exact: true })
     .click();
   const reportDownload = page.waitForEvent("download");
-  await page.getByRole("dialog", { name: "Finalizar atendimento?", exact: true })
-    .getByRole("button", { name: "Finalizar e baixar PDF", exact: true }).click();
+  await page
+    .getByRole("dialog", { name: "Finalizar atendimento?", exact: true })
+    .getByRole("button", { name: "Finalizar e baixar PDF", exact: true })
+    .click();
   await page.getByRole("status").filter({ hasText: "finalizado" }).waitFor();
-  await (await reportDownload).saveAs(path.join(output, "atendimento.pdf"));
+  const downloadedReport = await reportDownload;
+  assert.equal(
+    downloadedReport.suggestedFilename(),
+    `CLIENTE-QA-${tag}-QA-AT-${tag}.pdf`,
+  );
+  await downloadedReport.saveAs(path.join(output, "atendimento.pdf"));
   await page
     .getByLabel("Buscar número, cliente ou técnico", { exact: true })
     .fill("QA-AT-" + tag);
@@ -1354,6 +1711,10 @@ try {
   const reportSummary = page.getByRole("dialog", {
     name: "Resumo do registro",
   });
+  assert.equal(
+    await reportSummary.locator("h2 + p + p").innerText(),
+    "Finalizado",
+  );
   for (const title of [
     "A. Identificação",
     "B. Equipamento",
@@ -1368,7 +1729,16 @@ try {
         .count(),
       1,
     );
-  assert.ok((await reportSummary.innerText()).includes("LTM revisado " + tag));
+  assert.ok((await reportSummary.innerText()).includes("LTM REVISADO " + tag));
+  assert.ok(!(await reportSummary.innerText()).includes("Capacidade nominal"));
+  for (const text of [
+    "Verifique na revisão: peça e cabo sem avarias.",
+    "Agendar retorno após confirmação do cliente.",
+  ])
+    assert.ok(
+      (await reportSummary.innerText()).includes(text),
+      "Preserva a capitalização do motivo/serviço após salvar",
+    );
   for (const label of [
     "Deslocamento de ida 2",
     "Trabalho 2",
@@ -1378,7 +1748,7 @@ try {
     assert.ok((await reportSummary.innerText()).includes(label));
   assert.ok(
     (await reportSummary.innerText()).includes(
-      "Trânsito intenso na BR-381; atraso de 2h no retorno.",
+      "TRÂNSITO INTENSO NA BR-381; ATRASO DE 2H NO RETORNO.",
     ),
   );
   assert.equal(
@@ -1400,18 +1770,18 @@ try {
   );
   assert.equal(
     await page.getByLabel("Descrição da peça", { exact: true }).inputValue(),
-    "Peça revisada",
+    "PEÇA REVISADA",
   );
   assert.equal(
     await page.getByLabel("Fornecedor", { exact: true }).inputValue(),
-    "Fornecedor revisado",
+    "FORNECEDOR REVISADO",
   );
   assert.equal(
     await page.getByLabel("Quantidade", { exact: true }).inputValue(),
     "2",
   );
   assert.equal(
-    await page.getByLabel("Classificação", { exact: true }).inputValue(),
+    await page.getByLabel("Tipo de serviço", { exact: true }).inputValue(),
     "replaced",
   );
   assert.equal(
@@ -1438,18 +1808,18 @@ try {
     ),
     true,
   );
-  await openSection("A. Identificação");
+  await openSection("E. Cronograma de atendimento", "Dia 1");
   await page
-    .getByRole("button", { name: "Abrir calendário: Data", exact: true })
+    .getByRole("button", { name: "Abrir calendário: Data do dia", exact: true })
     .click();
   const calendarBox = await page
-    .getByRole("dialog", { name: "Calendário: Data", exact: true })
+    .getByRole("dialog", { name: "Calendário: Data do dia", exact: true })
     .boundingBox();
   assert.ok(calendarBox.x >= 0 && calendarBox.x + calendarBox.width <= 390);
   await page.screenshot({
     path: path.join(output, "calendario-responsivo.png"),
   });
-  await page.getByLabel("Data: dia", { exact: true }).press("Escape");
+  await page.getByLabel("Data do dia: dia", { exact: true }).press("Escape");
   await page.screenshot({
     path: path.join(output, "equipe-responsiva.png"),
     fullPage: true,
@@ -1481,22 +1851,18 @@ try {
   );
   assert.equal(
     await page.getByLabel("Local", { exact: true }).inputValue(),
-    "Oficina BR LIFT",
+    "OFICINA BR LIFT",
   );
   assert.equal(
-    await page.getByLabel("KM na data", { exact: true }).inputValue(),
+    await page.getByLabel("KM", { exact: true }).inputValue(),
     "500",
   );
   assert.equal(
-    await page
-      .getByLabel("Horímetro inferior na data", { exact: true })
-      .inputValue(),
+    await page.getByLabel("Hor. Inferior", { exact: true }).inputValue(),
     "25",
   );
   assert.equal(
-    await page
-      .getByLabel("Horímetro superior na data", { exact: true })
-      .inputValue(),
+    await page.getByLabel("Hor. Superior", { exact: true }).inputValue(),
     "N/A",
   );
   assert.equal(
@@ -1509,7 +1875,7 @@ try {
   await page
     .getByRole("group", { name: "Quem trabalhou neste dia?", exact: true })
     .getByRole("checkbox", {
-      name: "Segundo técnico QA " + tag + " (Técnico)",
+      name: "SEGUNDO TÉCNICO QA " + tag + " (Técnico)",
       exact: true,
     })
     .check();
@@ -1518,26 +1884,24 @@ try {
       "345 min de trabalho",
     ),
   );
-  await page.getByRole("button", { name: "Finalizar atendimento", exact: true }).click();
-  await page.getByRole("dialog", { name: "Finalizar atendimento?", exact: true })
-    .getByRole("button", { name: "Só finalizar", exact: true }).click();
   await page
-    .getByRole("status")
-    .filter({ hasText: "finalizado" })
-    .waitFor();
+    .getByRole("button", { name: "Finalizar atendimento", exact: true })
+    .click();
+  await page
+    .getByRole("dialog", { name: "Finalizar atendimento?", exact: true })
+    .getByRole("button", { name: "Só finalizar", exact: true })
+    .click();
+  await page.getByRole("status").filter({ hasText: "finalizado" }).waitFor();
   await page.getByRole("button", { name: "Inspeções", exact: true }).click();
   await page
     .getByRole("button", { name: "+ Nova inspeção", exact: true })
     .click();
-  await page
-    .getByLabel("Número identificador (único)", { exact: true })
-    .fill("QA-IN-" + tag);
-  await page
-    .getByLabel("Cliente", { exact: true })
-    .selectOption({ label: "Cliente QA " + tag + " — 123" + doc });
+  await page.getByLabel("O.S. OMIE", { exact: true }).fill("QA-IN-" + tag);
+  await page.getByLabel("Cliente", { exact: true }).selectOption(clientId);
   await page
     .getByLabel("Inspeção realizada por", { exact: true })
-    .selectOption({ label: "Técnico QA " + tag + " — " + doc });
+    .selectOption(firstTech);
+  await page.getByLabel("Veículo", { exact: true }).selectOption(vehicleId);
   await page
     .getByLabel("Equipamento", { exact: true })
     .selectOption(equipmentId);
@@ -1550,7 +1914,81 @@ try {
       .getByRole("button", { name: "Hoje", exact: true })
       .click();
   }
-  await page.getByLabel("RESULTADO DA VISTORIA", { exact: true }).selectOption("Aprovada");
+  const identity = page.locator('[data-fold="A"]');
+  assert.equal(
+    await identity.getByLabel("CAPACIDADE NOMINAL", { exact: true }).count(),
+    1,
+  );
+  await identity
+    .getByRole("button", { name: "Editar equipamento", exact: true })
+    .click();
+  assert.equal(
+    await equipmentModal
+      .getByLabel("Capacidade nominal", { exact: true })
+      .count(),
+    1,
+  );
+  await equipmentModal
+    .getByLabel("Capacidade nominal", { exact: true })
+    .fill("80 t");
+  await equipmentModal.getByLabel("Placa", { exact: true }).fill("ABC1D23");
+  await equipmentModal.getByLabel("Frota", { exact: true }).fill("FROTA-009");
+  await equipmentModal
+    .getByRole("button", { name: "Salvar cadastro", exact: true })
+    .click();
+  await equipmentModal.waitFor({ state: "hidden" });
+  assert.equal(
+    await identity
+      .getByLabel("CAPACIDADE NOMINAL", { exact: true })
+      .inputValue(),
+    "80 T",
+  );
+  assert.equal(
+    await identity.getByLabel("Placa", { exact: true }).inputValue(),
+    "ABC1D23",
+  );
+  assert.equal(
+    await identity.getByLabel("Frota", { exact: true }).inputValue(),
+    "FROTA-009",
+  );
+  assert.equal(
+    await identity.getByLabel("Marca", { exact: true }).inputValue(),
+    "LIEBHERR",
+  );
+  assert.equal(
+    await identity.getByLabel("RESULTADO DA VISTORIA", { exact: true }).count(),
+    0,
+  );
+  assert.equal(
+    await identity.getByLabel("Inspeção aprovada por", { exact: true }).count(),
+    0,
+  );
+  assert.equal(
+    await identity
+      .getByLabel("MODELO DO GUINDASTE", { exact: true })
+      .isDisabled(),
+    true,
+  );
+  await identity.getByLabel("KM", { exact: true }).fill("0");
+  await identity.getByLabel("Hor. Inferior", { exact: true }).fill("27");
+  await identity
+    .getByRole("button", { name: "Não se aplica: Hor. Superior", exact: true })
+    .click();
+  await openSection("Cronograma de atendimento");
+  await page
+    .getByRole("button", { name: "+ Dia de inspeção", exact: true })
+    .click();
+  assert.equal(
+    await page
+      .getByRole("group", { name: "Quem trabalhou neste dia?", exact: true })
+      .count(),
+    0,
+  );
+  await page
+    .getByLabel("Observações do dia", { exact: true })
+    .fill("Vistoria em campo");
+  await addPeriod("Deslocamento de ida", "Ida", 1, "07:00", "08:00");
+  await addPeriod("Trabalho", "Trabalho", 1, "08:00", "10:00", "15");
   const inspectionSections = createTemplateSections();
   const titleFor = (item) => `${item.code} — ${item.name}`;
   await openSection("Checklist técnico");
@@ -1559,41 +1997,85 @@ try {
   // Existing answers must be skipped by the guided flow.
   for (const item of [firstSection.items[0], firstSection.items[2]]) {
     await openSection("Checklist técnico", firstSection.name, titleFor(item));
-    await page.getByRole("group", { name: "Situação " + item.code, exact: true })
-      .getByRole("button", { name: "A", exact: true }).click();
+    await page
+      .getByRole("group", { name: "Situação " + item.code, exact: true })
+      .getByRole("button", { name: "A", exact: true })
+      .click();
   }
   await page.getByRole("button", { name: /Pergunta a pergunta/ }).click();
-  const guided = page.getByRole("dialog", { name: titleFor(firstSection.items[1]), exact: true });
+  const guided = page.getByRole("dialog", {
+    name: titleFor(firstSection.items[1]),
+    exact: true,
+  });
   await guided.waitFor();
-  await guided.getByRole("group", { name: "Situação " + firstSection.items[1].code, exact: true })
-    .getByRole("button").first().click();
-  await guided.getByRole("button", { name: "Próximo pendente →", exact: true }).click();
-  const nextGuided = page.getByRole("dialog", { name: titleFor(inspectionSections[1].items[0]), exact: true });
+  await guided
+    .getByRole("group", {
+      name: "Situação " + firstSection.items[1].code,
+      exact: true,
+    })
+    .getByRole("button")
+    .first()
+    .click();
+  await guided
+    .getByRole("button", { name: "Próximo pendente →", exact: true })
+    .click();
+  const nextGuided = page.getByRole("dialog", {
+    name: titleFor(inspectionSections[1].items[0]),
+    exact: true,
+  });
   await nextGuided.waitFor();
-  await nextGuided.getByRole("button", { name: "Voltar ao checklist em modo lista", exact: true }).click();
+  await nextGuided
+    .getByRole("button", {
+      name: "Voltar ao checklist em modo lista",
+      exact: true,
+    })
+    .click();
   for (const section of inspectionSections) {
     for (const item of section.items) {
       await openSection("Checklist técnico", section.name, titleFor(item));
-      const answer = page.getByRole("group", { name: "Situação " + item.code, exact: true })
+      const answer = page
+        .getByRole("group", { name: "Situação " + item.code, exact: true })
         .getByRole("button", { name: "A", exact: true });
-      if (await answer.getAttribute("aria-pressed") !== "true") await answer.click();
+      if ((await answer.getAttribute("aria-pressed")) !== "true")
+        await answer.click();
     }
   }
   await page.getByLabel("Somente pendentes", { exact: true }).check();
   await page.getByText("Nenhum item encontrado.", { exact: true }).waitFor();
   await page.getByLabel("Somente pendentes", { exact: true }).uncheck();
-  await openSection("Checklist técnico", firstSection.name, titleFor(firstSection.items[0]));
-  const firstItemPanel = page.getByRole("heading", { name: titleFor(firstSection.items[0]), exact: true }).locator("..");
-  await firstItemPanel.getByLabel("Observações do item", { exact: true }).fill("Conferido presencialmente");
-  await firstItemPanel.getByLabel("Adicionar fotos", { exact: true }).setInputFiles([
+  await openSection(
+    "Checklist técnico",
+    firstSection.name,
+    titleFor(firstSection.items[0]),
+  );
+  const firstItemPanel = page
+    .getByRole("heading", {
+      name: titleFor(firstSection.items[0]),
+      exact: true,
+    })
+    .locator("..");
+  await firstItemPanel
+    .getByLabel("Observações do item", { exact: true })
+    .fill("Conferido presencialmente");
+  await firstItemPanel
+    .getByLabel("Adicionar fotos", { exact: true })
+    .setInputFiles([
       { name: "inspecao-1.png", mimeType: "image/png", buffer: photo },
       { name: "inspecao-2.png", mimeType: "image/png", buffer: photo },
     ]);
   await page.getByAltText("inspecao-2.png", { exact: true }).waitFor();
-  const extraSection = inspectionSections.find((section) => section.items.some((item) => item.code === "126"));
+  const extraSection = inspectionSections.find((section) =>
+    section.items.some((item) => item.code === "126"),
+  );
   const extraItem = extraSection.items.find((item) => item.code === "126");
-  await openSection("Checklist técnico", extraSection.name, titleFor(extraItem));
-  const extra = page.getByRole("heading", { name: titleFor(extraItem), exact: true }).locator("..");
+  await openSection(
+    "Checklist técnico",
+    extraSection.name,
+    titleFor(extraItem),
+  );
+  const extra = page
+    .getByRole("heading", { name: titleFor(extraItem), exact: true })
+    .locator("..");
   await extra
     .getByLabel("Adicionar fotos", { exact: true })
     .nth(1)
@@ -1607,16 +2089,29 @@ try {
     .getByLabel("Observações do item", { exact: true })
     .fill("Diâmetro nominal medido: 20 mm; laudo informado pelo examinador.");
   await openSection("Assinatura e finalização");
-  await sign("Assinatura do técnico");
-  await sign("Assinatura do cliente");
+  await page
+    .getByLabel("RESULTADO DA VISTORIA", { exact: true })
+    .selectOption("Aprovada");
+  await page
+    .getByLabel("Inspeção aprovada por", { exact: true })
+    .selectOption(secondTech);
+  await sign("Assinatura do técnico", "Inspetor QA");
+  await sign("Assinatura do cliente", "Cliente da inspeção");
   await page
     .getByRole("button", { name: "Finalizar inspeção", exact: true })
     .click();
   const inspectionDownload = page.waitForEvent("download");
-  await page.getByRole("dialog", { name: "Finalizar inspeção?", exact: true })
-    .getByRole("button", { name: "Finalizar e baixar PDF", exact: true }).click();
+  await page
+    .getByRole("dialog", { name: "Finalizar inspeção?", exact: true })
+    .getByRole("button", { name: "Finalizar e baixar PDF", exact: true })
+    .click();
   await page.getByRole("status").filter({ hasText: "finalizado" }).waitFor();
-  await (await inspectionDownload).saveAs(path.join(output, "inspecao.pdf"));
+  const downloadedInspection = await inspectionDownload;
+  assert.equal(
+    downloadedInspection.suggestedFilename(),
+    `CLIENTE-QA-${tag}-QA-IN-${tag}.pdf`,
+  );
+  await downloadedInspection.saveAs(path.join(output, "inspecao.pdf"));
   await page
     .getByLabel("Buscar número, cliente ou técnico", { exact: true })
     .fill("QA-IN-" + tag);
@@ -1627,6 +2122,46 @@ try {
   const inspectionSummary = page.getByRole("dialog", {
     name: "Resumo do registro",
   });
+  const docxBytes = await page.evaluate(async (number) => {
+    const entry = (
+      await (
+        await fetch("/api/inspections?q=" + encodeURIComponent(number))
+      ).json()
+    ).items[0];
+    const response = await fetch(
+      "/api/inspections/" + entry.id + "/document/docx",
+    );
+    if (!response.ok)
+      throw Error("Falha no DOCX da inspeção: " + response.status);
+    return Array.from(new Uint8Array(await response.arrayBuffer()));
+  }, "QA-IN-" + tag);
+  await fs.writeFile(
+    path.join(output, "inspecao.docx"),
+    Buffer.from(docxBytes),
+  );
+  const inspectionDocx = await JSZip.loadAsync(Buffer.from(docxBytes));
+  const inspectionXml = await inspectionDocx
+    .file("word/document.xml")
+    .async("string");
+  for (const value of [
+    "CLIENTE QA " + tag,
+    "LIEBHERR",
+    "ABC1D23",
+    "FROTA-009",
+    "RESUMO DO CRONOGRAMA",
+  ])
+    assert.ok(inspectionXml.includes(value), value);
+  assert.match(
+    inspectionXml,
+    /Trabalho líquido: 105 min · Deslocamento líquido: 60 min · Quilometragem total: 0/,
+  );
+  assert.doesNotMatch(inspectionXml, /\bCPF\b|GUINDASTE – Guindaste/);
+  assert.ok(
+    Object.keys(inspectionDocx.files).some((name) =>
+      name.includes("stg-img_126_1-"),
+    ),
+    "Foto complementar entra no documento final",
+  );
   assert.ok(
     (await inspectionSummary.innerText()).includes("Dados da inspeção"),
   );
@@ -1649,6 +2184,45 @@ try {
     path: path.join(output, "gestao-responsiva.png"),
     fullPage: true,
   });
+  // Editing equipment from a technical report must not erase the shared
+  // capacity previously registered through the inspection workflow.
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page
+    .getByRole("button", { name: "Relatório Técnico", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "+ Novo atendimento", exact: true })
+    .click();
+  await page.getByLabel("Cliente", { exact: true }).selectOption(clientId);
+  await openSection("B. Equipamento");
+  await page
+    .getByLabel("Equipamento", { exact: true })
+    .selectOption(equipmentId);
+  assert.equal(
+    await page.getByLabel("Capacidade nominal", { exact: true }).count(),
+    0,
+  );
+  await page
+    .getByRole("button", { name: "Editar equipamento", exact: true })
+    .click();
+  assert.equal(
+    await equipmentModal
+      .getByLabel("Capacidade nominal", { exact: true })
+      .count(),
+    0,
+  );
+  await equipmentModal
+    .getByRole("button", { name: "Salvar cadastro", exact: true })
+    .click();
+  await equipmentModal.waitFor({ state: "hidden" });
+  const preservedEquipment = await page.evaluate(
+    async (id) =>
+      (await (await fetch("/api/catalog/equipment")).json()).items.find(
+        (item) => item.id === id,
+      ),
+    equipmentId,
+  );
+  assert.equal(preservedEquipment.data.nominalCapacity, "80 T");
   assert.deepEqual(errors, []);
   for (const file of ["atendimento.pdf", "inspecao.pdf"])
     assert.equal(

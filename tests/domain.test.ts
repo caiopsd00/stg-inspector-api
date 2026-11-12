@@ -111,6 +111,68 @@ test("mesmo carro compartilha ida, volta, pausas e KM, mas não horários de tra
   assert.equal(dayTotals(d).work, 645);
   assert.equal(dayTotals(d).travel, 210);
 });
+test("KM por período é contado por veículo e preservado ao sair da carona", () => {
+  const day = newDay("per-period-km");
+  const work = {
+    id: "work",
+    kind: "work" as const,
+    start: "08:00",
+    end: "12:00",
+    pauseMinutes: "15",
+    odometerStart: "100",
+    odometerEnd: "125",
+  };
+  const travel = {
+    id: "trip",
+    kind: "outbound" as const,
+    start: "07:00",
+    end: "08:00",
+    pauseMinutes: "",
+    odometerStart: "80",
+    odometerEnd: "100",
+  };
+  const driver = {
+    technicianId: "driver",
+    present: true,
+    periods: [work, travel],
+    odometerStart: "1",
+    odometerEnd: "90",
+    sameHoursAs: null,
+    sameVehicleAs: null,
+  };
+  const passenger = {
+    ...driver,
+    technicianId: "passenger",
+    periods: [
+      {
+        ...work,
+        id: "own-work",
+        start: "09:00",
+        odometerStart: undefined,
+        odometerEnd: undefined,
+      },
+    ],
+    sameVehicleAs: "driver",
+  };
+  day.participants = [driver, passenger];
+  assert.equal(
+    dayTotals(day).km,
+    45,
+    "Não duplica KM de carona nem soma o KM diário antigo",
+  );
+  assert.equal(
+    dayPeriods(participantDay(day, "passenger")).find((p) => p.kind === "work")
+      ?.start,
+    "09:00",
+  );
+  day.participants = setDayPresence(day, "driver", false);
+  assert.equal(
+    dayTotals(day).km,
+    45,
+    "Desvincular mantém as leituras efetivas do carro",
+  );
+  assert.equal(dayTotals(day).work, 165);
+});
 test("presença diária, horas compartilhadas dinâmicas e KM por veículo", () => {
   let d = newDay("team-day");
   d.periods = [

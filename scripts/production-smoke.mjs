@@ -129,7 +129,7 @@ try {
     import {createTemplateSections} from './dist/contracts/inspection-template.js';
     import {pool} from './dist/server/db.js';
     try {
-      const account = await createUserAndTechnician({name:'Smoke', email:'smoke@example.test', cpf:'12345678901', password:${JSON.stringify(password)}, role:'admin'});
+      const account = await createUserAndTechnician({name:'Smoke', email:'smoke@example.test', cpf:'12345678901', password:${JSON.stringify(password)}, role:'technician_admin'});
       console.log(JSON.stringify({technicianId:account.technician.id, report:newReport(), sections:createTemplateSections()}));
     } finally { await pool.end(); }
   `;
