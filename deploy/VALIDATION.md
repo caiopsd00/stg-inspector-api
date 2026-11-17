@@ -1,5 +1,22 @@
 # Validação da API para o piloto local — 05/11/2026
 
+## Automação de deploy — 12/11/2026
+
+- Build TypeScript e 51 testes da API aprovados, sem skips, com conversão real
+  de inspeção em PDF. Verificação de segredos dos arquivos publicáveis aprovada.
+- `npm run test:deploy`: 19 cenários aprovados em Linux descartável, incluindo
+  sintaxe Bash, ShellCheck e validação estática da unidade pelo systemd-analyze.
+- Instalador real e Git real em fixtures: fast-forward de dois repositórios,
+  staged/unstaged/untracked, divergência, falha de fetch, proteção do `.env`,
+  bloqueio de execuções simultâneas, repetição e retenção de cinco logs.
+- Docker/curl/systemctl simulados para falhas de build, migração/inicialização,
+  JSON de outro banco, HTML inválido e bundle indisponível; sem falsa conclusão
+  de sucesso nem rollback/reset de banco. Configuração gravável por terceiros
+  é rejeitada antes de ser executada.
+- O container de testes não recebe mounts/socket Docker/credenciais do host
+  e executa sem rede. Não foi iniciado um systemd PID 1 nem acessada a VPS.
+  Instalação e uso reais: [AUTOMATED-DEPLOY.md](AUTOMATED-DEPLOY.md).
+
 ## Documento de inspeção — 12/11/2026
 
 - Build da API e do web, 49 testes unitários da API com conversão real de PDF,

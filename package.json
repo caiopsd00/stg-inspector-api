@@ -16,6 +16,7 @@
     "test": "tsx --test tests/concurrency.test.ts tests/cors.test.ts tests/domain.test.ts tests/media.test.ts tests/object-storage.test.ts tests/relational-utils.test.ts tests/secret-check.test.ts tests/security.test.ts tests/template.test.ts tests/users.test.ts",
     "test:integration": "tsx --test tests/integration.test.ts",
     "test:production": "node scripts/production-smoke.mjs",
+    "test:deploy": "node scripts/test-deploy.mjs",
     "security:check": "node scripts/check-secrets.mjs",
     "test:e2e": "npm run build && node scripts/e2e.mjs"
   },

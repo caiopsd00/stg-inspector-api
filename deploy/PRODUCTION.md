@@ -136,8 +136,14 @@ Não use `down -v` nem o script de reset local nessa instalação.
 
 ## Atualizações
 
-Após revisar/testar e enviar a nova versão ao Git, atualize os dois repositórios
-na VPS e execute o mesmo `up -d --build`. Migrations são aplicadas sem reset.
+Para atualizar os dois repositórios, construir e publicar com um único comando
+em segundo plano, instale a ferramenta [brlift-deploy](AUTOMATED-DEPLOY.md).
+Ela conserva o `.env.production`, usa systemd, registra logs/commits e verifica
+banco, migrations, HTTPS e web. Não executa deploy no boot nem a cada push.
+
+O procedimento manual continua disponível: após revisar/testar e enviar a nova
+versão ao Git, atualize os dois repositórios na VPS e execute o mesmo
+`up -d --build`. Migrations são aplicadas sem reset.
 O Compose usa `init` e permite até 130 segundos para encerrar a API,
 para não interromper imediatamente uma conversão de documento em andamento.
 Não é necessário instalar Node, npm ou PostgreSQL diretamente no host.

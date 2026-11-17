@@ -1,0 +1,23 @@
+[Unit]
+Description=Atualizacao manual do BR LIFT (API e web)
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=root
+UMask=0077
+Environment=HOME=/root
+ExecStart=/usr/local/lib/brlift-deploy/run.sh
+TimeoutStartSec=45min
+TimeoutStopSec=30s
+KillMode=control-group
+StateDirectory=brlift-deploy
+StateDirectoryMode=0700
+LogsDirectory=brlift-deploy
+LogsDirectoryMode=0700
+StandardOutput=journal
+StandardError=journal
+
+# Deliberately no [Install]: neither boot nor a timer triggers a deployment.
