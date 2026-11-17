@@ -72,6 +72,18 @@ código. `VITE_*` e `EXPO_PUBLIC_*` entram no bundle: até quando vêm de `.env`
 
 ## Dependências e operação
 
+Em 17/11/2026 foi corrigido o alerta baixo
+[GHSA-474x-hrwr-fgx4 / CVE-2026-126066](https://github.com/advisories/GHSA-474x-hrwr-fgx4):
+`fast-xml-parser` 5.11.2 → 5.12.1, dependência transitiva de
+`@google-cloud/storage` 8.4.0. O lockfile também atualiza os componentes exigidos
+por essa versão: `fast-xml-builder` 1.3.1 → 1.3.2 e `is-unsafe` 2.0.2 → 2.0.3.
+Não foram adicionados overrides, dependências diretas ou alterações de major.
+`npm audit` completo e `npm audit --omit=dev` retornaram zero vulnerabilidades.
+Testes cobrem a versão instalada/lockfile, o formato XML do SDK e rejeição do
+input malformado com `stopNodes`, em processo isolado com timeout.
+Avisos de pacotes descontinuados ainda podem aparecer no npm; não são esse
+alerta e não foram ocultados do painel de deploy.
+
 Use `npm ci`, preserve os lockfiles e repita auditorias antes de cada release.
 API e web tiveram alertas corrigidos nesta revisão; não use `audit fix --force`
 para trocar a stack sem verificar compatibilidade. O relatório de validação

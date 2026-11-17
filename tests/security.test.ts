@@ -2,9 +2,60 @@ import assert from "node:assert/strict";
 import { once } from "node:events";
 import type { AddressInfo } from "node:net";
 import test from "node:test";
+import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { createApp } from "../server/app.js";
 import { createAttemptLimiter } from "../server/attempt-limiter.js";
 import { httpConfig } from "../server/http-config.js";
+
+// Resolve from the SDK, not from an unrelated direct test dependency: this is
+// the same transitive parser/builder that @google-cloud/storage actually loads.
+const projectRequire = createRequire(join(process.cwd(), "package.json"));
+const storageRequire = createRequire(projectRequire.resolve("@google-cloud/storage"));
+const xmlEntry = storageRequire.resolve("fast-xml-parser");
+
+test("parser XML do SDK está corrigido e corresponde à versão do lockfile", () => {
+  const installed = JSON.parse(readFileSync(join(dirname(dirname(xmlEntry)), "package.json"), "utf8"));
+  const locked = JSON.parse(readFileSync("package-lock.json", "utf8"));
+  assert.equal(installed.name, "fast-xml-parser");
+  assert.equal(installed.version, locked.packages["node_modules/fast-xml-parser"].version);
+  const [major, minor] = installed.version.split(".").map(Number);
+  assert.ok(major > 5 || (major === 5 && minor >= 12), "GHSA-474x-hrwr-fgx4 afeta versões até 5.11.2.");
+});
+
+test("parser e builder XML mantêm o formato multipart usado pelo SDK GCS", () => {
+  const { XMLParser, XMLBuilder } = storageRequire("fast-xml-parser");
+  const parser = new XMLParser();
+  const response = parser.parse(
+    '<?xml version="1.0"?><InitiateMultipartUploadResult><Bucket>qa-private</Bucket><Key>fotos/a&amp;b.jpg</Key><UploadId>QA+SAFE==</UploadId></InitiateMultipartUploadResult>',
+  );
+  assert.equal(response.InitiateMultipartUploadResult.UploadId, "QA+SAFE==");
+  assert.equal(response.InitiateMultipartUploadResult.Key, "fotos/a&b.jpg");
+  const parts = [
+    { PartNumber: 1, ETag: '"etag-one"' },
+    { PartNumber: 2, ETag: '"etag-two"' },
+  ];
+  const builder = new XMLBuilder({ arrayNodeName: "Part" });
+  const body = `<CompleteMultipartUpload>${builder.build(parts)}</CompleteMultipartUpload>`;
+  assert.deepEqual(parser.parse(body).CompleteMultipartUpload.Part, parts);
+});
+
+test("XML malformado em stopNodes é rejeitado sem varredura quadrática", () => {
+  // Isolate the adversarial input in a bounded process. A regression must fail
+  // this test, not freeze the test runner. No network or application data used.
+  const result = spawnSync(process.execPath, ["-e", `
+    const assert = require('node:assert/strict');
+    const { XMLParser } = require(${JSON.stringify(xmlEntry)});
+    const input = '<stop>' + '<a '.repeat(250000);
+    assert.throws(() => new XMLParser({stopNodes:['stop']}).parse(input), /Unexpected end of stop/);
+    process.stdout.write('rejected');
+  `], { encoding: "utf8", timeout: 5000, maxBuffer: 1024 * 1024 });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, "rejected");
+});
 
 test("produção recusa CORS aberto, origens inseguras e confiança irrestrita em proxies", () => {
   const valid = { NODE_ENV: "production", WEB_ORIGIN: "https://app.example.test", TRUST_PROXY: "1" };

@@ -1,5 +1,26 @@
 # Validação da API para o piloto local — 05/11/2026
 
+## Correção de dependência XML — 17/11/2026
+
+- Identificado `fast-xml-parser` 5.11.2 via `@google-cloud/storage` 8.4.0,
+  com um alerta baixo: GHSA-474x-hrwr-fgx4 / CVE-2026-126066.
+- Lockfile atualizado para 5.12.1, com builder/validador transitivos exigidos,
+  sem trocar SDK, adicionar overrides ou mudar dependências diretas da API.
+- Instalação limpa `npm ci`, build TypeScript, `npm audit` completo e
+  `npm audit --omit=dev` aprovados: zero vulnerabilidades reportadas.
+- 54 testes da API, sem skips, incluindo PDFs reais e três regressões novas:
+  versão corrigida efetivamente resolvida pelo SDK, parse/build XML multipart
+  compatíveis e XML malformado de stopNodes rejeitado em processo com timeout.
+- 12 testes/subtestes de integração e E2E completo em Chrome aprovados com
+  PostgreSQL/armazenamento exclusivos de QA, sem usar dados da VPS.
+- Ensaio real do Compose de produção, com Node 22: finalização, upload privado,
+  ambos os PDFs, persistência de banco/sessão/mídia ao recriar containers e
+  recuperação após reiniciar somente PostgreSQL aprovados.
+- 28 cenários da ferramenta de deploy aprovados. Não houve mudança funcional
+  de formulários, schema/migrations, autenticação, endpoints, web ou mobile.
+- Parser/builder do SDK exercitados localmente; nenhum bucket GCS real foi
+  acessado. Nenhum commit, push ou deploy foi executado nesta validação.
+
 ## Painel de deploy e resumo final — 17/11/2026
 
 - `npm run test:deploy`: 28 cenários aprovados em Linux descartável. Mantidas
