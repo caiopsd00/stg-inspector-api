@@ -13,27 +13,41 @@ WEB_BEFORE=unknown
 API_TARGET=unknown
 WEB_TARGET=unknown
 STARTED=$(date -u +%FT%TZ)
+START_EPOCH=$(date +%s)
+RUN_ID=${INVOCATION_ID:-$(date -u +%Y%m%dT%H%M%S)-$$}
+RUN_DIR=
+COMPLETED=
+LOGGER_PID=
+ERROR_MESSAGE=
 
 log() { printf '[%s] %s\n' "$(date -u +%FT%TZ)" "$*"; }
-die() { log "ERRO: $*" >&2; exit 1; }
+die() { ERROR_MESSAGE=$*; log "ERRO: $*" >&2; exit 1; }
 
 write_result() {
   local result=$1
   {
     printf 'RESULTADO=%s\nETAPA=%s\nINICIO=%s\nATUALIZADO=%s\n' "$result" "$STAGE" "$STARTED" "$(date -u +%FT%TZ)"
     printf 'API_ANTES=%s\nAPI_ALVO=%s\nWEB_ANTES=%s\nWEB_ALVO=%s\n' "$API_BEFORE" "$API_TARGET" "$WEB_BEFORE" "$WEB_TARGET"
-  } > "$STATE/last-result.tmp"
+    printf 'RUN_ID=%s\nSTART_EPOCH=%s\nDURATION_SECONDS=%s\nCOMPLETED=%s\nCUTOVER=%s\nERROR_MESSAGE=%s\n' \
+      "$RUN_ID" "$START_EPOCH" "$SECONDS" "$COMPLETED" "$CUTOVER" "$ERROR_MESSAGE"
+  } > "$RUN_DIR/result.tmp"
+  mv "$RUN_DIR/result.tmp" "$RUN_DIR/result"
+  cp "$RUN_DIR/result" "$STATE/last-result.tmp"
   mv "$STATE/last-result.tmp" "$STATE/last-result"
+}
+
+advance() {
+  COMPLETED="${COMPLETED:+$COMPLETED }$STAGE"
+  STAGE=$1
+  write_result executando
 }
 
 finish() {
   local code=$?
   trap - EXIT
   if (( code == 0 )); then
-    write_result sucesso
     log 'SUCESSO: deploy concluido; API, web, migracoes e HTTPS verificados.'
   else
-    write_result erro
     log "FALHA na etapa $STAGE (codigo $code). Consulte brlift-deploy logs."
     if (( CUTOVER )); then
       log 'A troca de versao ja comecou. O gateway pode estar parado ou a nova versao parcialmente ativa.'
@@ -42,6 +56,14 @@ finish() {
       log 'Nao houve troca de containers nem parada do gateway por este deploy.'
     fi
   fi
+  # Flush the complete log and warning observer BEFORE publishing a final result.
+  # Closing the viewer never owns or signals these service-side processes.
+  exec 1>&8 2>&1
+  if ! wait "$LOGGER_PID"; then
+    code=1
+    ERROR_MESSAGE='Falha ao concluir o registro do log; consulte o journal.'
+  fi
+  if (( code == 0 )); then write_result sucesso; else write_result erro; fi
   rm -f "$STATE/health.json" "$STATE/web.html"
   exit "$code"
 }
@@ -72,12 +94,23 @@ fetch_target() {
 
 main() {
   [[ $EUID -eq 0 && $(uname -s) == Linux ]] || die 'Este executor exige Linux e root.'
-  for tool in git docker curl flock timeout sha256sum stat tee; do
+  for tool in git docker curl flock timeout sha256sum stat tee awk; do
     command -v "$tool" >/dev/null || die "Dependencia ausente: $tool"
   done
   install -d -m 700 "$STATE" "$LOG_DIR"
   exec 9> "$STATE/deploy.lock"
   flock -n 9 || die 'Outro deploy ja possui a trava.'
+  [[ "$RUN_ID" =~ ^[a-zA-Z0-9_-]+$ ]] || die 'Identificador de execucao invalido.'
+  RUN_DIR="$STATE/runs/$RUN_ID"
+  install -d -m 700 "$RUN_DIR"
+  : > "$RUN_DIR/warnings"
+  : > "$RUN_DIR/errors"
+  # Keep metadata/warnings for the five most recent runs, independently of a
+  # viewer still finishing an older run. Only this tool's state is removed.
+  local _stamp old
+  while read -r _stamp old; do
+    if [[ "$old" =~ ^[a-zA-Z0-9_-]+$ && "$old" != "$RUN_ID" ]]; then rm -rf -- "$STATE/runs/$old"; fi
+  done < <(find "$STATE/runs" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %f\n' | sort -rn | tail -n +6)
   # Keep five completed/running deployment logs; neither .env nor full Compose
   # configuration is ever echoed into them. Also available via journalctl.
   local i
@@ -86,7 +119,9 @@ main() {
     if [[ -f "$LOG_DIR/deploy.log.$i" ]]; then mv "$LOG_DIR/deploy.log.$i" "$LOG_DIR/deploy.log.$((i + 1))"; fi
   done
   if [[ -f "$LOG_DIR/deploy.log" ]]; then mv "$LOG_DIR/deploy.log" "$LOG_DIR/deploy.log.1"; fi
-  exec > >(tee -a "$LOG_DIR/deploy.log") 2>&1
+  exec 8>&1
+  exec > >(tee -a "$LOG_DIR/deploy.log" "$RUN_DIR/log" | awk -v state_dir="$RUN_DIR" -f /usr/local/lib/brlift-deploy/observe.awk) 2>&1
+  LOGGER_PID=$!
   trap finish EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
@@ -123,7 +158,7 @@ main() {
   database_id=$(dc exec -T postgres psql -U brlift -d brlift -Atqc 'SELECT database_id FROM app_instance WHERE singleton;')
   [[ "$database_id" =~ ^[a-f0-9-]{36}$ ]] || die 'Nao foi possivel identificar o banco existente.'
 
-  STAGE=git
+  advance git
   API_BEFORE=$(git -C "$API_REPO" rev-parse HEAD)
   WEB_BEFORE=$(git -C "$WEB_REPO" rev-parse HEAD)
   # Validate BOTH histories before fast-forwarding EITHER checkout. Pin the
@@ -138,21 +173,19 @@ main() {
   [[ $(sha256sum .env.production) == "$env_hash" ]] || die '.env.production mudou durante a atualizacao; publicacao interrompida.'
   dc config --quiet 2>/dev/null || die 'A nova configuracao Compose e invalida; valores omitidos do log.'
 
-  STAGE=build-api
-  write_result executando
+  advance build-api
   dc build api
-  STAGE=build-web
-  write_result executando
+  advance build-web
   dc build web
   [[ $(sha256sum .env.production) == "$env_hash" ]] || die '.env.production mudou durante o build; publicacao interrompida.'
   check_repo "$API_REPO"
   check_repo "$WEB_REPO"
   [[ $(git -C "$API_REPO" rev-parse HEAD) == "$API_TARGET" && $(git -C "$WEB_REPO" rev-parse HEAD) == "$WEB_TARGET" ]] || die 'Os commits locais mudaram durante o build.'
 
-  STAGE=publicacao
-  write_result executando
+  advance publicacao
   log 'Imagens prontas. Iniciando breve indisponibilidade do acesso publico.'
   CUTOVER=1
+  write_result executando
   dc stop gateway
   dc up -d --no-build --wait --wait-timeout 300 postgres api web
   # Verify identity and every expected migration before reopening public access.
@@ -175,8 +208,7 @@ main() {
   # Recreate so a changed, file-bound Caddyfile cannot retain its old inode.
   dc up -d --no-build --force-recreate --wait --wait-timeout 120 gateway
 
-  STAGE=https
-  write_result executando
+  advance https
   # No -k: a valid public TLS certificate is required. Curl writes the body to
   # a private local file; Node inside the API validates JSON rather than grep.
   local health_file="$STATE/health.json" attempts
@@ -192,8 +224,7 @@ main() {
     sleep 3
   done
 
-  STAGE=web
-  write_result executando
+  advance web
   local site_url=${HEALTH_URL%/health} web_file="$STATE/web.html" asset
   curl --fail --silent --show-error --proto '=https' --connect-timeout 5 --max-time 15 "$site_url/" -o "$web_file"
   asset=$(dc exec -T api node --input-type=module -e '
@@ -205,7 +236,7 @@ main() {
   [[ "$asset" =~ ^/assets/[a-zA-Z0-9_.-]+\.js$ ]] || die 'Asset principal do web invalido.'
   curl --fail --silent --show-error --proto '=https' --connect-timeout 5 --max-time 15 "$site_url$asset" -o /dev/null
   dc ps
-  STAGE=concluido
+  advance concluido
 }
 
 main "$@"

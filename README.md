@@ -227,7 +227,7 @@ no uso fora do Compose; na VPS piloto ambos ficam em 1.
 
 Inicialização, domínio, administrador, atualização e validação:
 [deploy/PRODUCTION.md](deploy/PRODUCTION.md).
-Atualização em segundo plano com um comando, status e logs:
+Atualização em segundo plano com painel ao vivo, resumo final e log completo:
 [instalar e usar brlift-deploy](deploy/AUTOMATED-DEPLOY.md).
 Validação isolada da ferramenta: `npm run test:deploy` (exige Docker local).
 O adaptador GCS anterior permanece opcional e inativo no modo `local/local`;

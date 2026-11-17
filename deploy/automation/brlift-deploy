@@ -4,13 +4,16 @@ set -euo pipefail
 UNIT=brlift-deploy.service
 STATE=/var/lib/brlift-deploy
 LOG=/var/log/brlift-deploy/deploy.log
+MONITOR=/usr/local/lib/brlift-deploy/monitor.sh
 
 usage() {
   printf '%s\n' \
-    'Uso: brlift-deploy [status|logs|help]' \
-    '  Sem argumento: inicia uma atualizacao em segundo plano.' \
-    '  status: informa o andamento e o resultado da ultima execucao.' \
-    '  logs: acompanha o log; Ctrl+C encerra apenas a visualizacao.' \
+    'Uso: brlift-deploy [--detach|watch|status|logs|help]' \
+    '  Sem argumento: inicia o deploy e acompanha o painel ate o resumo final.' \
+    '  --detach: apenas inicia em segundo plano, sem abrir o painel.' \
+    '  watch: retoma o acompanhamento, sem iniciar outro deploy.' \
+    '  status: mostra um resumo da ultima execucao, sem esperar.' \
+    '  logs: acompanha o log completo; Ctrl+C encerra apenas a visualizacao.' \
     'Execute como root ou com sudo. O comando nao faz push nem backup.'
 }
 
@@ -20,35 +23,29 @@ main() {
   [[ $EUID -eq 0 ]] || { printf 'Execute com sudo ou como root.\n' >&2; return 1; }
   [[ -f /etc/brlift-deploy.conf ]] || { printf 'Instale primeiro com deploy/install-deploy.sh.\n' >&2; return 1; }
   case "${1:-start}" in
-    start)
-      local active
+    start|--detach)
+      local active previous=
       active=$(systemctl show "$UNIT" --property=ActiveState --value)
       case "$active" in
         activating|active|deactivating)
-          printf 'Ja existe um deploy em andamento. Use brlift-deploy status ou logs.\n'
-          return 1
+          printf 'Ja existe um deploy em andamento; nenhum outro sera iniciado.\n'
+          [[ ${1:-start} != --detach ]] || return 1
+          exec "$MONITOR"
           ;;
       esac
+      if [[ -r "$STATE/last-result" ]]; then
+        previous=$(sed -n 's/^RUN_ID=//p' "$STATE/last-result")
+      fi
       systemctl start --no-block "$UNIT"
       printf '%s\n' \
         'Deploy solicitado em segundo plano. Isso ainda nao confirma sucesso.' \
         'Pode fechar o SSH: a execucao e supervisionada pelo systemd.' \
-        'Andamento/resultado: brlift-deploy status' \
-        'Acompanhar log:      brlift-deploy logs'
+        'Ctrl+C encerra so o acompanhamento. Log completo: brlift-deploy logs'
+      [[ ${1:-start} != --detach ]] || return 0
+      exec "$MONITOR" --after-run "$previous"
       ;;
-    status)
-      systemctl show "$UNIT" \
-        --property=ActiveState,SubState,Result,ExecMainStatus,ExecMainStartTimestamp,ExecMainExitTimestamp
-      if [[ -f "$STATE/last-result" ]]; then
-        printf '\nRegistro da ultima execucao:\n'
-        # This is data, never sourced as shell code.
-        sed -n '1,20p' "$STATE/last-result"
-      else
-        printf '\nNenhum resultado registrado ainda.\n'
-      fi
-      printf '\nSucesso: RESULTADO=sucesso, Result=success e ExecMainStatus=0.\n'
-      printf 'Um servico oneshot concluido fica inactive/dead; isso e normal.\n'
-      ;;
+    watch) exec "$MONITOR" ;;
+    status) exec "$MONITOR" --once ;;
     logs)
       [[ -f "$LOG" ]] || { printf 'Ainda nao existe log. Consulte brlift-deploy status.\n'; return; }
       printf 'Ctrl+C fecha apenas esta visualizacao; nao cancela o deploy.\n'

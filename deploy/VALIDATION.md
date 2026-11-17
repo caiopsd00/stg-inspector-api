@@ -1,5 +1,23 @@
 # Validação da API para o piloto local — 05/11/2026
 
+## Painel de deploy e resumo final — 17/11/2026
+
+- `npm run test:deploy`: 28 cenários aprovados em Linux descartável. Mantidas
+  as proteções anteriores de Git, concorrência, banco e falhas de publicação.
+- Painel testado em PTY real: recolhimento das linhas, conclusão automática,
+  Ctrl+C sem encerrar o executor de QA, terminal pequeno e redimensionamento.
+- Saída simples sem TTY/TERM=dumb, deduplicação de avisos, sanitização de ANSI,
+  resumo de erros e recusa de sucesso antigo durante a inicialização do serviço.
+- Comando durante outro deploy apenas acompanha, sem iniciar um segundo job.
+  `--detach`, `watch`, `status` e log integral continuam disponíveis.
+- Resultados por execução são gravados atomicamente; o resultado final só é
+  publicado depois de drenar o observador do log. Nenhuma inferência de sucesso
+  é feita pelo conteúdo textual de warnings/builds.
+- Build TypeScript, 51 testes da API sem skips (incluindo PDF real) e checagem
+  de segredos aprovados. Nenhuma alteração funcional no web/mobile/API.
+- Docker/curl/systemctl são dublês dentro do QA; a unidade continua validada
+  estaticamente, sem systemd PID 1 e sem acesso à VPS. Python só no QA de PTY.
+
 ## Automação de deploy — 12/11/2026
 
 - Build TypeScript e 51 testes da API aprovados, sem skips, com conversão real

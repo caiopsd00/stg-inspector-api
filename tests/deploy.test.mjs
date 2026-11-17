@@ -22,14 +22,44 @@ const args=process.argv.slice(2), name=path.basename(process.argv[1]), dir=proce
 const flag=n=>fs.existsSync(path.join(dir,n));
 fs.appendFileSync(path.join(dir,'calls'),JSON.stringify([name,...args])+'\\n');
 if(name==='systemctl') {
-  if(args.includes('show')) {
-    if(args.includes('--value')) console.log(flag('active')?'activating':'inactive');
-    else console.log('ActiveState=inactive\\nSubState=dead\\nResult=success\\nExecMainStatus=0');
+  const file=path.join(dir,'service.json');
+  const read=()=>fs.existsSync(file)?JSON.parse(fs.readFileSync(file)):({ActiveState:'inactive',Result:'success',ExecMainStatus:'0',InvocationID:'',Job:'0'});
+  if(args[0]==='__manage') {
+    const state=read();
+    if(flag('worker-not-started')) {
+      state.ActiveState='failed';state.Result='exit-code';state.ExecMainStatus='91';
+      fs.writeFileSync(file,JSON.stringify(state));process.exit(0);
+    }
+    if(flag('startup-delay')) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,600);
+    const child=cp.spawn('bash',['/usr/local/lib/brlift-deploy/run.sh'],{env:{...process.env,INVOCATION_ID:state.InvocationID},stdio:'inherit'});
+    child.on('exit',(code,signal)=>{
+      state.ActiveState=code===0?'inactive':'failed';state.Result=code===0?'success':'exit-code';state.ExecMainStatus=String(code??143);state.Job='0';
+      fs.writeFileSync(file,JSON.stringify(state));process.exit(0);
+    });
+    return;
   }
-  if(args.includes('start')) fs.writeFileSync(path.join(dir,'queued'),'');
+  if(args.includes('show')) {
+    const state=read();if(flag('active')) state.ActiveState='activating';
+    if(args.includes('--value')) console.log(state.ActiveState);
+    else for(const [key,value] of Object.entries(state)) console.log(key+'='+value);
+  }
+  if(args.includes('start')) {
+    fs.writeFileSync(path.join(dir,'queued'),'');
+    if(flag('auto-run')) {
+      const id=require('node:crypto').randomBytes(16).toString('hex');
+      fs.writeFileSync(file,JSON.stringify({ActiveState:'activating',Result:'success',ExecMainStatus:'0',InvocationID:id,Job:'0'}));
+      const fd=fs.openSync(path.join(dir,'journal'),'a');
+      const manager=cp.spawn(process.execPath,[process.argv[1],'__manage'],{detached:true,stdio:['ignore',fd,fd],env:process.env});
+      manager.unref();fs.closeSync(fd);
+    }
+  }
   process.exit(0);
 }
-if(name==='sleep') process.exit(0);
+if(name==='sleep') {
+  // Keep production waits, but accelerate HTTP retries in this offline suite.
+  if(args[0]==='1') cp.spawnSync('/bin/sleep',['0.1']);
+  process.exit(0);
+}
 if(name==='curl') {
   if(flag('curl-fail')) process.exit(7);
   const url=args[args.indexOf('-o')-1];
@@ -64,10 +94,17 @@ if(name==='docker') {
       fs.writeFileSync(path.join(dir,'building'),'');
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,1200);
     }
-    if(flag('build-fail') && tail.includes('web')) process.exit(9);
+    if(flag('warnings')) {
+      console.log('#12 1.20 npm warn deprecated sample-package: aviso QA');
+      console.log('#12 1.21 npm warn deprecated sample-package: aviso QA');
+      console.log('#12 1.22 1 low severity vulnerability');
+      console.log('#12 1.23 found 0 vulnerabilities');
+    }
+    if(flag('build-fail') && tail.includes('web')) { console.error('ERROR: failed to solve: exemplo de erro de build QA'); process.exit(9); }
     console.log('Imagem QA construida');process.exit(0);
   }
   if(command==='up' && tail.includes('api') && flag('up-fail')) process.exit(12);
+  if(command==='stop' && !fs.readFileSync('/var/lib/brlift-deploy/last-result','utf8').includes('CUTOVER=1')) process.exit(90);
   process.exit(0);
 }
 process.exit(99);
@@ -84,6 +121,17 @@ function ok(command, args, options = {}) {
   return result.stdout.trim();
 }
 function git(repo, ...args) { return ok("git", ["-C", repo, ...args]); }
+
+async function waitForIdle(f) {
+  for (let i = 0; i < 200; i++) {
+    const text = await fs.readFile(path.join(f.state, "service.json"), "utf8").catch(error => { if (error.code === "ENOENT") return ""; throw error; });
+    if (!text) return { ActiveState: "inactive", ExecMainStatus: "not-started" };
+    const state = JSON.parse(text);
+    if (["inactive", "failed"].includes(state.ActiveState)) return state;
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  throw Error("Executor QA nao encerrou.");
+}
 
 let serial = 0;
 async function fixture() {
@@ -142,7 +190,7 @@ const stopped = calls => calls.some(call => commandIs(call, "stop"));
 const reopened = calls => calls.some(call => commandIs(call, "up") && call.at(-1) === "gateway");
 
 test("Bash, ShellCheck e unidade systemd sem erros", async () => {
-  const files = ["deploy/install-deploy.sh", "deploy/automation/brlift-deploy", "deploy/automation/run.sh"];
+  const files = ["deploy/install-deploy.sh", "deploy/automation/brlift-deploy", "deploy/automation/run.sh", "deploy/automation/monitor.sh"];
   for (const file of files) ok("bash", ["-n", file]);
   ok("shellcheck", ["-x", "-e", "SC1091", ...files]);
   const f = await fixture();
@@ -267,12 +315,12 @@ test("flock impede segunda execucao mesmo chamando o worker diretamente", async 
   assert.match(await f.result(), /RESULTADO=sucesso/);
 });
 
-test("CLI agenda no systemd sem bloquear; status e reinstalacao preservam o app", async () => {
+test("CLI --detach agenda no systemd sem bloquear; status e reinstalacao preservam o app", async () => {
   const f = await fixture();
-  assert.equal(f.cli().status, 0);
+  assert.equal(f.cli("--detach").status, 0);
   assert.ok((await f.calls()).some(c => c[0] === "systemctl" && c.includes("--no-block") && c.includes("start")));
   await f.flag("active");
-  assert.notEqual(f.cli().status, 0);
+  assert.notEqual(f.cli("--detach").status, 0);
   assert.notEqual(f.install().status, 0);
   await fs.rm(path.join(f.state, "active"));
   assert.equal(f.worker().status, 0);
@@ -292,6 +340,7 @@ test("repetir deploy e seguro; retem somente os cinco logs e o mesmo .env", asyn
   assert.equal((await fs.stat("/var/log/brlift-deploy/deploy.log")).mode & 0o777, 0o600);
   assert.equal(git(f.api.repo, "rev-parse", "HEAD"), f.api.target);
   assert.match(await f.result(), /RESULTADO=sucesso/);
+  assert.equal((await fs.readdir('/var/lib/brlift-deploy/runs')).length, 5);
 });
 
 test("configuracao gravavel por terceiros e recusada antes de ser executada", async () => {
@@ -301,6 +350,130 @@ test("configuracao gravavel por terceiros e recusada antes de ser executada", as
   assert.notEqual(f.worker().status, 0);
   assert.equal(await fs.stat(path.join(f.state, "unsafe-config-executed")).catch(() => null), null);
   assert.equal(stopped(await f.calls()), false);
+});
+
+test("avisos conhecidos sao deduplicados, zero vulnerabilidades nao e aviso e ANSI e removido", async () => {
+  const dir = path.join(temp, "observer");
+  await fs.mkdir(dir);
+  const input = [
+    "#12 1.1 npm warn deprecated pacote: exemplo",
+    "#17 2.2 npm WARN deprecated pacote: exemplo",
+    "#12 1.3 found 0 vulnerabilities",
+    "#12 1.4 1 low severity vulnerability",
+    "\x1b[31mWARNING: aviso colorido\x1b[0m",
+    "\x1b]2;titulo\x07normal",
+  ].join("\n");
+  ok("awk", ["-v", `state_dir=${dir}`, "-f", "deploy/automation/observe.awk"], { input });
+  const warnings = (await fs.readFile(path.join(dir, "warnings"), "utf8")).trim().split("\n");
+  assert.equal(warnings.length, 3);
+  assert.ok(!warnings.join().includes("\x1b"));
+  assert.ok(!warnings.join().includes("0 vulnerabilities"));
+  const sanitized = ok("awk", ["-v", "sanitize_only=1", "-f", "deploy/automation/observe.awk"], { input });
+  assert.ok(!sanitized.includes("\x1b") && !sanitized.includes("titulo"));
+});
+
+test("comando padrao acompanha, termina sozinho e resume avisos sem ANSI fora de TTY", async () => {
+  const f = await fixture(); await f.flag("auto-run"); await f.flag("warnings");
+  try {
+    const result = f.cli();
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /DEPLOY CONCLUIDO/);
+    assert.match(result.stdout, /Erros: 0 \| Avisos identificados: 2/);
+    assert.match(result.stdout, /\[OK\].*Git: backend e frontend/);
+    assert.ok(!result.stdout.includes("\x1b"));
+    assert.ok(!result.stdout.includes("#12 1.20"));
+    assert.equal((await f.calls()).filter(c => c[0] === "systemctl" && c.includes("start")).length, 1);
+  } finally { await waitForIdle(f); }
+});
+
+test("resultado antigo nao vira falso sucesso durante startup; erro atual retorna codigo nao zero", async () => {
+  const f = await fixture(); assert.equal(f.worker().status, 0);
+  await f.flag("auto-run"); await f.flag("startup-delay"); await f.flag("build-fail");
+  try {
+    const result = f.cli();
+    assert.notEqual(result.status, 0);
+    assert.match(result.stdout, /DEPLOY FALHOU/);
+    assert.ok(!result.stdout.includes("DEPLOY CONCLUIDO"));
+    assert.match(result.stdout, /exemplo de erro de build QA/);
+    assert.match(result.stdout, /nao parou o gateway/);
+  } finally { await waitForIdle(f); }
+});
+
+test("painel TTY recolhe as linhas anteriores e termina com resumo final", async () => {
+  const f = await fixture(); await f.flag("auto-run"); await f.flag("hold-build");
+  try {
+    const result = run("python3", ["tests/deploy-pty.py", "normal"], { env: f.env });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /\x1b\[[0-9]+A/);
+    assert.match(result.stdout, /DEPLOY CONCLUIDO/);
+    assert.ok(!result.stdout.includes("\x1b[2J"));
+    assert.match(result.stdout, /Erros: 0/);
+  } finally { await waitForIdle(f); }
+});
+
+test("Ctrl+C no painel sai do acompanhamento e nao mata o deploy em segundo plano", async () => {
+  const f = await fixture(); await f.flag("auto-run"); await f.flag("hold-build");
+  try {
+    const result = run("python3", ["tests/deploy-pty.py", "interrupt"], { env: f.env });
+    assert.equal(result.status, 130, result.stdout + result.stderr);
+    assert.match(result.stdout, /Acompanhamento encerrado/);
+    assert.equal((await waitForIdle(f)).ExecMainStatus, "0");
+    assert.match(await f.result(), /RESULTADO=sucesso/);
+    assert.equal(f.cli("watch").status, 0);
+  } finally { await waitForIdle(f); }
+});
+
+test("terminal pequeno usa painel compacto e TERM=dumb nao recebe escapes", async () => {
+  const f = await fixture(); await f.flag("auto-run"); await f.flag("hold-build");
+  try {
+    const result = run("python3", ["tests/deploy-pty.py", "small"], { env: f.env });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    const moves = [...result.stdout.matchAll(/\x1b\[(\d+)A/g)].map(m => Number(m[1]));
+    assert.ok(moves.length && moves.every(n => n <= 10));
+    assert.match(result.stdout, /DEPLOY CONCLUIDO/);
+    const plain = f.cli("status");
+    assert.equal(plain.status, 0);
+    assert.ok(!plain.stdout.includes("\x1b"));
+    const dumb = run("python3", ["tests/deploy-pty.py", "dumb"], { env: f.env });
+    assert.equal(dumb.status, 0, dumb.stdout + dumb.stderr);
+    assert.ok(!dumb.stdout.includes("\x1b"));
+  } finally { await waitForIdle(f); }
+});
+
+test("redimensionar o terminal nao limpa o historico nem redesenha uma area maior que a tela", async () => {
+  const f = await fixture(); await f.flag("auto-run"); await f.flag("hold-build");
+  try {
+    const result = run("python3", ["tests/deploy-pty.py", "resize"], { env: f.env });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    const afterResize = result.stdout.split('QA_RESIZE')[1];
+    assert.ok(afterResize);
+    assert.ok([...afterResize.matchAll(/\x1b\[(\d+)A/g)].every(m => Number(m[1]) <= 10));
+    assert.match(result.stdout, /DEPLOY CONCLUIDO/);
+  } finally { await waitForIdle(f); }
+});
+
+test("reabrir o comando durante um deploy apenas acompanha, sem criar outro job", async () => {
+  const f = await fixture(); await f.flag("auto-run"); await f.flag("hold-build");
+  try {
+    assert.equal(f.cli('--detach').status, 0);
+    const attached = f.cli();
+    assert.equal(attached.status, 0, attached.stdout + attached.stderr);
+    assert.match(attached.stdout, /nenhum outro sera iniciado/);
+    assert.match(attached.stdout, /DEPLOY CONCLUIDO/);
+    assert.equal((await f.calls()).filter(c => c[0] === 'systemctl' && c.includes('start')).length, 1);
+  } finally { await waitForIdle(f); }
+});
+
+test("falha anterior ao primeiro resultado do worker nao reaproveita sucesso antigo", async () => {
+  const f = await fixture(); assert.equal(f.worker().status, 0);
+  await f.flag('auto-run'); await f.flag('worker-not-started');
+  try {
+    const result = f.cli();
+    assert.notEqual(result.status, 0);
+    assert.match(result.stdout, /DEPLOY FALHOU/);
+    assert.ok(!result.stdout.includes('DEPLOY CONCLUIDO'));
+    assert.match(result.stdout, /sem um resultado final desta execucao/);
+  } finally { await waitForIdle(f); }
 });
 
 after(async () => { await fs.rm(temp, { recursive: true, force: true }); });

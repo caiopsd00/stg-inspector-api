@@ -1,11 +1,12 @@
 FROM node:22-bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    bash git curl util-linux coreutils shellcheck systemd \
+    bash git curl util-linux coreutils shellcheck systemd python3 \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /source
 COPY deploy/automation ./deploy/automation
 COPY deploy/install-deploy.sh ./deploy/install-deploy.sh
 COPY compose.production.yml ./compose.production.yml
 COPY tests/deploy.test.mjs ./tests/deploy.test.mjs
+COPY tests/deploy-pty.py ./tests/deploy-pty.py
 ENV BRLIFT_DEPLOY_QA=1
 CMD ["node", "--test", "tests/deploy.test.mjs"]

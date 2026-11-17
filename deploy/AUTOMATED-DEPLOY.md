@@ -26,10 +26,12 @@ O instalador **não faz deploy nem reinicia a aplicação**. Conserva o conteúd
 `.env.production` existente e restringe suas permissões a 0600. Instala:
 
 - `/usr/local/bin/brlift-deploy`: comando administrativo.
-- `/usr/local/lib/brlift-deploy/run.sh`: executor independente do checkout Git.
+- `/usr/local/lib/brlift-deploy/`: executor, painel e observador de avisos,
+  independentes do checkout Git.
 - `/etc/systemd/system/brlift-deploy.service`: serviço manual do tipo oneshot.
 - `/etc/brlift-deploy.conf`: caminhos, branch e URL de verificação; nenhuma senha.
-- `/var/lib/brlift-deploy/`: trava e registro da última execução.
+- `/var/lib/brlift-deploy/`: trava, registro atual e os cinco últimos resumos,
+  com avisos/contexto de erro e log completo identificados por execução.
 - `/var/log/brlift-deploy/`: log atual e quatro anteriores, acessíveis só por root.
 
 API padrão: pasta do repositório que contém o instalador. Web padrão:
@@ -53,19 +55,62 @@ não execute o instalador no Mac nem dentro de um container comum.
    brlift-deploy
    ```
 
-3. Consulte o resultado ou acompanhe ao vivo:
+3. O acompanhamento abre automaticamente. Ao terminar, o comando volta ao prompt
+   sozinho, deixando o resumo final: etapas OK/não executadas/com erro, duração,
+   commits, avisos identificados e caminho do log completo.
+
+Para consultar ou retomar depois de desconectar:
 
    ```sh
    brlift-deploy status
+   brlift-deploy watch
    brlift-deploy logs
    ```
 
-O primeiro comando apenas **agenda** a execução; não confirma sucesso. Pode
-desconectar o SSH. `logs` acompanha as últimas 120 linhas; Ctrl+C fecha apenas
-a visualização, não o deploy. O log persiste em disco e também vai ao journal.
-Como o serviço é oneshot, terminar em `inactive/dead` é normal. Sucesso exige
-`RESULTADO=sucesso`, `Result=success` e `ExecMainStatus=0`. Durante a execução,
-o status mostra `activating` e a etapa atual; não inicie outro deploy.
+O serviço continua **em segundo plano no systemd**: o terminal é apenas um
+observador. Pode fechar o SSH ou usar Ctrl+C; isso não cancela o deploy.
+`watch` reabre somente o painel, sem iniciar nada. Se `brlift-deploy` for chamado
+enquanto há outro deploy ativo, apenas acompanha o existente, sem duplicá-lo.
+`logs` mantém a visualização completa tradicional (últimas 120 linhas + novas).
+
+Em terminal interativo, o painel atualiza apenas suas próprias linhas e recolhe
+os detalhes de etapas concluídas; não apaga o histórico anterior do terminal.
+Em terminais pequenos usa uma apresentação compacta. Fora de TTY ou com
+`TERM=dumb`, imprime atualizações simples, sem escapes. `NO_COLOR=1` desabilita
+as cores. O log integral continua em disco e no journal, mesmo com a tela resumida.
+
+Para iniciar sem abrir acompanhamento, preservando o comportamento anterior:
+
+```sh
+brlift-deploy --detach
+```
+
+Esse modo apenas agenda a execução, não confirma sucesso. O comando padrão e
+`watch` encerram sozinhos com código 0 ao confirmar sucesso; erro retorna código
+não zero. Ctrl+C no painel retorna 130 (interrupção da visualização, não falha do
+deploy). `status` mostra um retrato instantâneo, sem esperar pelo término.
+
+Como o serviço é oneshot, terminar em `inactive/dead` é normal. O painel não
+interpreta `Result=success` isoladamente como conclusão: aguarda um resultado
+final da execução correta **e** o encerramento do serviço. O identificador evita
+confundir sucesso antigo com um deploy novo que está apenas iniciando.
+
+### Resumo e avisos
+
+Os resultados de cada etapa vêm do executor, não de inferência sobre textos do
+build. Os avisos são mensagens conhecidas de npm/auditoria, Docker/Caddy e
+tentativas de curl, deduplicadas sem os contadores/tempos do BuildKit. Avisos
+não transformam uma falha em sucesso nem são automaticamente tratados como
+bloqueadores. `0 vulnerabilities` e notícias de atualização do npm não contam
+como aviso. A detecção não pretende reconhecer qualquer formato possível de log.
+
+No resumo final aparecem até cinco avisos; os demais continuam no registro.
+Cada execução retém até 50 mensagens distintas de aviso e 100 linhas de contexto
+de erro, com indicação se o limite de avisos for atingido. A contagem é de
+mensagens identificadas, não de CVEs. Uma execução falha mostra a etapa e até três
+linhas relevantes de erro; etapas seguintes não executadas não são marcadas OK.
+O log integral não é truncado pelo painel. Não usa IA, API externa nem Node/Python
+no servidor para resumir mensagens: somente Bash/AWK e os utilitários do Ubuntu.
 
 Não precisa dar pull, executar migrations, instalar dependências ou recriar
 usuários manualmente: o processo faz fetch + fast-forward dos dois repositórios,
@@ -111,6 +156,7 @@ produção nem substitui o aceite manual dos formulários/PDFs.
 
 ```sh
 brlift-deploy status
+brlift-deploy watch
 brlift-deploy logs
 journalctl -u brlift-deploy.service -n 100 --no-pager
 ```
@@ -132,7 +178,9 @@ O executor instalado é uma cópia estável fora do Git: não muda enquanto est�
 rodando. Quando este instalador/executor/unit forem alterados no repositório,
 aguarde o deploy terminar e repita o comando de instalação com a mesma URL.
 Isso atualiza a ferramenta, sem reiniciar aplicação ou apagar logs/configurações
-da aplicação. Não precisa reinstalar a cada mudança normal do web/backend.
+da aplicação. **Para receber o painel novo, é necessário repetir o instalador:**
+somente `git pull` não substitui a cópia instalada em `/usr/local/lib`.
+Não precisa reinstalar a cada mudança normal do web/backend.
 
 ## Testes da ferramenta (no computador de desenvolvimento)
 
@@ -141,9 +189,13 @@ npm run test:deploy
 ```
 
 Constrói um Linux descartável com Bash, ShellCheck, Git e systemd-analyze.
+Python existe apenas nessa imagem de QA, para simular um terminal PTY e enviar
+Ctrl+C real; não é instalado nem usado pela ferramenta na VPS.
 Testa o instalador real e repositórios Git reais em fixtures. Valida a unidade
-systemd estaticamente; Docker/curl/systemctl são dublês de teste para simular
-sucesso, concorrência e falhas. **Não** monta o socket Docker, volumes, chaves
+systemd estaticamente; Docker/curl/systemctl são dublês de teste, com um supervisor
+de QA separado do painel para simular sucesso, concorrência, desconexão e falhas.
+Também testa ANSI, terminal pequeno, saída sem TTY e resumo de avisos.
+**Não** monta o socket Docker, volumes, chaves
 ou pastas do host no container de testes, que roda sem rede. Não executa um
 systemd como PID 1 nem um deploy/ensaio contra a VPS real. O funcionamento da
 aplicação/Compose é coberto separadamente por `npm run test:production`.

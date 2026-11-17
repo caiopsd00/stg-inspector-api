@@ -35,7 +35,7 @@ main() {
   done
   [[ $EUID -eq 0 && $(uname -s) == Linux ]] || die 'Instale na VPS Linux, como root ou com sudo.'
   [[ -d /run/systemd/system ]] || die 'O servidor precisa estar inicializado com systemd.'
-  for tool in git docker curl flock timeout sha256sum stat tee systemctl realpath; do
+  for tool in git docker curl flock timeout sha256sum stat tee awk systemctl realpath; do
     command -v "$tool" >/dev/null || die "Dependencia ausente: $tool"
   done
   [[ "$HEALTH_URL" =~ ^https://[a-zA-Z0-9.-]+(:[0-9]+)?/health$ ]] || die 'Informe --health-url com HTTPS, sem credenciais e terminado em /health.'
@@ -54,6 +54,8 @@ main() {
   install -d -m 700 /var/lib/brlift-deploy /var/log/brlift-deploy
   install -m 755 "$SOURCE/deploy/automation/brlift-deploy" /usr/local/bin/brlift-deploy
   install -m 755 "$SOURCE/deploy/automation/run.sh" /usr/local/lib/brlift-deploy/run.sh
+  install -m 755 "$SOURCE/deploy/automation/monitor.sh" /usr/local/lib/brlift-deploy/monitor.sh
+  install -m 644 "$SOURCE/deploy/automation/observe.awk" /usr/local/lib/brlift-deploy/observe.awk
   install -m 644 "$SOURCE/deploy/automation/brlift-deploy.service" /etc/systemd/system/brlift-deploy.service
   {
     printf '# Gerado pelo instalador. Caminhos e URL apenas; nenhuma senha.\n'
@@ -63,7 +65,8 @@ main() {
   systemctl daemon-reload
   printf '%s\n' \
     'Instalado. A aplicacao e seus dados nao foram reiniciados ou alterados.' \
-    'Iniciar: brlift-deploy | Andamento: brlift-deploy status | Log: brlift-deploy logs' \
+    'Iniciar e acompanhar: brlift-deploy | Retomar painel: brlift-deploy watch' \
+    'Resumo: brlift-deploy status | Log completo: brlift-deploy logs' \
     'Nenhum timer, deploy no boot, backup ou armazenamento externo foi criado.'
 }
 
