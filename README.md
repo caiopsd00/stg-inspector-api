@@ -3,6 +3,13 @@
 Backend único Node.js/TypeScript + Express + PostgreSQL 16.
 Web: stg-system-web. Mobile: stg-inspector-mobile. STG/Supabase e Nex são separados.
 
+Os documentos usam a arte oficial BR LIFT, versionada em `branding` e incluída
+na imagem Docker. Cabeçalhos de relatório técnico e inspeção usam versões
+apropriadas para fundo escuro e impressão; não há download externo do logo.
+O conteúdo técnico, assinaturas e fluxo dos documentos não mudam. Para conferir,
+baixe novamente um PDF: arquivos já exportados não são modificados. A identidade
+visual não requer migration nem ajustes no banco.
+
 Conferência V0/proposta e correções de 09/10/2026:
 matriz de funcionalidades, testes e limites na documentação local, fora deste repositório.
 Esta revisão exige as migrations aditivas `002_schedule_periods.sql`,

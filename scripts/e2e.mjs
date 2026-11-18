@@ -141,6 +141,30 @@ try {
     await fillTime("Fim", originalEnd);
   }
   await page.goto(process.env.WEB_ORIGIN);
+  await page.getByRole("heading", { name: "Acesse sua operação" }).waitFor();
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 1000 });
+    assert.equal(
+      await page
+        .getByRole("img", { name: "BR LIFT", exact: true })
+        .evaluate(async (img) => {
+          await img.decode();
+          return img.complete && img.naturalWidth > 0;
+        }),
+      true,
+    );
+    assert.equal(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+      true,
+    );
+    await page.screenshot({
+      path: path.join(output, `marca-login-${width}.png`),
+      fullPage: true,
+    });
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
   await page.getByLabel("E-mail", { exact: true }).fill(email);
   await page.getByLabel("Senha", { exact: true }).fill(password);
   await page.getByRole("button", { name: "Entrar", exact: true }).click();

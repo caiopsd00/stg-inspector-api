@@ -15,6 +15,7 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json ./
 COPY database ./database
+COPY branding ./branding
 COPY template/inspecao-final-assinatura.docx ./template/inspecao-final-assinatura.docx
 RUN mkdir -p storage && chown -R node:node /app
 USER node

@@ -1,5 +1,6 @@
 import PDFDocument from "pdfkit";
 import sharp from "sharp";
+import { brandColors, brandLogo, brandAspectRatio } from "./brand.js";
 import { mediaStorageKey } from "./object-storage/index.js";
 import type { ObjectStorage } from "./object-storage/types.js";
 import {
@@ -18,19 +19,19 @@ import {
   type Media,
 } from "../contracts/domain.js";
 
-const NAVY = "#18181b";
-const GOLD = "#c9a84c";
+const INK = brandColors.ink;
+const LIME = brandColors.lime;
 const MARGIN = 42;
 const BODY_TOP = 48;
 const FOOTER_RESERVE = 90;
 
-/** BR LIFT's version of the V0 report: same hierarchy, A4 cadence and gold/navy
- * visual language, with the current normalized report fields and per-person day data. */
+/** Same report hierarchy and A4 cadence, with the official BR LIFT identity. */
 export async function createReportPdf(
   record: Entry,
   storage: ObjectStorage,
 ): Promise<Buffer> {
   const data = record.payload as Report;
+  const logo = await brandLogo("lime");
   const doc = new PDFDocument({
     size: "A4",
     margins: {
@@ -73,36 +74,29 @@ export async function createReportPdf(
   const minutesAsHours = (minutes: number) =>
     `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
   function pageHeader(first = false) {
-    doc.rect(0, 0, doc.page.width, first ? 60 : 28).fill(NAVY);
-    doc.rect(0, first ? 60 : 28, doc.page.width, 2).fill(GOLD);
+    doc.rect(0, 0, doc.page.width, first ? 60 : 28).fill(INK);
+    doc.rect(0, first ? 60 : 28, doc.page.width, 2).fill(LIME);
     if (first) {
-      doc
-        .font("Helvetica-Bold")
-        .fontSize(18)
-        .fillColor(GOLD)
-        .text("BR LIFT", MARGIN, 13, { lineBreak: false });
+      doc.image(logo, MARGIN, 7, { width: 54, height: 54 / brandAspectRatio });
       doc
         .font("Helvetica-Bold")
         .fontSize(10.5)
         .fillColor("#ffffff")
-        .text("RELATÓRIO DE ATENDIMENTO TÉCNICO", MARGIN + 96, 15, {
+        .text("RELATÓRIO DE ATENDIMENTO TÉCNICO", MARGIN + 78, 14, {
           lineBreak: false,
         });
-      doc.font("Helvetica-Bold").fontSize(13).fillColor(GOLD);
+      doc.font("Helvetica-Bold").fontSize(13).fillColor(LIME);
       const order = `O.S. OMIE ${record.number}`;
       const orderWidth = doc.widthOfString(order);
-      if (orderWidth > width) doc.fontSize((13 * width) / orderWidth);
-      doc.text(order, MARGIN, 37, {
-        width,
+      const orderArea = width - 78;
+      if (orderWidth > orderArea) doc.fontSize((13 * orderArea) / orderWidth);
+      doc.text(order, MARGIN + 78, 37, {
+        width: orderArea,
         align: "right",
         lineBreak: false,
       });
     } else {
-      doc
-        .font("Helvetica-Bold")
-        .fontSize(9)
-        .fillColor(GOLD)
-        .text("BR LIFT", MARGIN, 10, { lineBreak: false });
+      doc.image(logo, MARGIN, 3, { width: 27, height: 27 / brandAspectRatio });
       doc
         .font("Helvetica")
         .fontSize(8)
@@ -124,7 +118,7 @@ export async function createReportPdf(
   function footer(page: number, total: number) {
     const y = doc.page.height - 60;
     doc
-      .strokeColor(GOLD)
+      .strokeColor(LIME)
       .lineWidth(0.6)
       .moveTo(MARGIN, y)
       .lineTo(doc.page.width - MARGIN, y)
@@ -161,12 +155,12 @@ export async function createReportPdf(
     const index = String.fromCharCode(65 + sectionNumber++);
     ensure(46 + firstContent);
     const y = doc.y + 10;
-    doc.rect(MARGIN, y, width, 26).fill(NAVY);
-    doc.rect(MARGIN, y, 4, 26).fill(GOLD);
+    doc.rect(MARGIN, y, width, 26).fill(INK);
+    doc.rect(MARGIN, y, 4, 26).fill(LIME);
     doc
       .font("Helvetica-Bold")
       .fontSize(9)
-      .fillColor(GOLD)
+      .fillColor(LIME)
       .text(index, MARGIN + 11, y + 9, { lineBreak: false });
     doc
       .font("Helvetica-Bold")
@@ -203,7 +197,7 @@ export async function createReportPdf(
           2,
           Math.min(Math.max(14, h), doc.page.height - FOOTER_RESERVE - y),
         )
-        .fill(GOLD);
+        .fill(LIME);
     doc
       .fillColor(opts.color ?? "#222222")
       .text(content, x, y, { width: w, lineGap: 2 });
@@ -288,7 +282,7 @@ export async function createReportPdf(
     doc
       .font("Helvetica-Bold")
       .fontSize(9)
-      .fillColor(GOLD)
+      .fillColor(INK)
       .text(String(index).padStart(2, "0"), MARGIN, y, { lineBreak: false });
     doc
       .font("Helvetica")
@@ -459,11 +453,11 @@ export async function createReportPdf(
     ensure(140);
     const y = doc.y;
     doc.rect(MARGIN, y, width, 26).fill("#f4f1e8");
-    doc.rect(MARGIN, y, 3, 26).fill(GOLD);
+    doc.rect(MARGIN, y, 3, 26).fill(LIME);
     doc
       .font("Helvetica-Bold")
       .fontSize(9)
-      .fillColor(NAVY)
+      .fillColor(INK)
       .text(
         `DIA ${String(di + 1).padStart(2, "0")}  ·  ${date(day.date)}`,
         MARGIN + 9,
@@ -571,7 +565,7 @@ export async function createReportPdf(
       const totals = dayTotals(day);
       textBlock(
         `Total do dia (KM sem duplicidade): ${totals.km} km  •  Trabalho da equipe: ${totals.work} min  •  Deslocamento da equipe: ${totals.travel} min`,
-        { bold: true, size: 8, color: NAVY },
+        { bold: true, size: 8, color: INK },
       );
     }
   }
@@ -593,11 +587,11 @@ export async function createReportPdf(
   ensure(summaryHeight + 12);
   const summaryY = doc.y;
   doc.rect(MARGIN, summaryY, width, summaryHeight).fill("#f4f1e8");
-  doc.rect(MARGIN, summaryY, 4, summaryHeight).fill(GOLD);
+  doc.rect(MARGIN, summaryY, 4, summaryHeight).fill(LIME);
   doc
     .font("Helvetica-Bold")
     .fontSize(8.5)
-    .fillColor(NAVY)
+    .fillColor(INK)
     .text("RESUMO DE HORAS E DESLOCAMENTO", MARGIN + 12, summaryY + 8, {
       lineBreak: false,
     });
@@ -673,7 +667,7 @@ export async function createReportPdf(
     doc
       .font("Helvetica-Bold")
       .fontSize(8)
-      .fillColor(NAVY)
+      .fillColor(INK)
       .text(label.toUpperCase(), x + 12, signatureY + 12, {
         width: signatureWidth - 16,
         align: "center",

@@ -219,6 +219,22 @@ test("inspeção inclui identificação, totais, fotos complementares e assinatu
     };
     const docx = await createInspectionDocxAsync(inspection);
     const zip = await JSZip.loadAsync(docx);
+    assert.ok(zip.file("word/media/brlift-brand.png"));
+    assert.match(
+      await zip.file("[Content_Types].xml")!.async("string"),
+      /Extension="png" ContentType="image\/png"/,
+    );
+    const header = await zip.file("word/header1.xml")!.async("string");
+    assert.match(header, /r:embed="rIdBRLiftBrand"/);
+    assert.match(header, /name="BR LIFT"/);
+    assert.match(header, /w:color="CAE211"/);
+    const headerRelationships = await zip
+      .file("word/_rels/header1.xml.rels")!
+      .async("string");
+    assert.match(
+      headerRelationships,
+      /Id="rIdBRLiftBrand".*Target="media\/brlift-brand.png"/,
+    );
     const xml = await zip.file("word/document.xml")!.async("string");
     const technicianLabel = xml.indexOf("Assinatura do técnico");
     const technicianIdentity = xml.indexOf("TÉCNICO SIGNATÁRIO");

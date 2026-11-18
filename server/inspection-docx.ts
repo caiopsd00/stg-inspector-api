@@ -3,6 +3,7 @@ import { cleanInspectionTemplateXml } from "../contracts/inspection-template-cle
 import path from "node:path";
 import JSZip from "jszip";
 import sharp from "sharp";
+import { brandLogo, brandHeaderXml, brandHeaderNamespaces } from "./brand.js";
 import { getObjectStorage, mediaStorageKey } from "./object-storage/index.js";
 import type { ObjectStorage } from "./object-storage/types.js";
 import {
@@ -801,6 +802,16 @@ export async function createInspectionDocxAsync(
   storage: ObjectStorage = getObjectStorage(),
 ) {
   const zip = await loadTemplateZip();
+  const contentTypes = await zip.file("[Content_Types].xml")!.async("string");
+  if (!/Extension="png"/i.test(contentTypes))
+    zip.file(
+      "[Content_Types].xml",
+      contentTypes.replace(
+        "</Types>",
+        '<Default Extension="png" ContentType="image/png"/></Types>',
+      ),
+    );
+  zip.file("word/media/brlift-brand.png", await brandLogo("ink"));
   // Preserve the technical template. Replace the previous company's header/footer.
   for (const name of Object.keys(zip.files).filter((n) =>
     /^word\/(header|footer)\d+\.xml$/.test(n),
@@ -808,18 +819,27 @@ export async function createInspectionDocxAsync(
     const header = name.includes("header"),
       tag = header ? "hdr" : "ftr";
     const content = header
-      ? '<w:p><w:pPr><w:jc w:val="left"/></w:pPr><w:r><w:rPr><w:b/><w:color w:val="8B671D"/><w:sz w:val="32"/></w:rPr><w:t>BR LIFT</w:t></w:r></w:p><w:p><w:r><w:rPr><w:sz w:val="18"/></w:rPr><w:t>INSPEÇÃO E VISTORIA DE EQUIPAMENTO</w:t></w:r></w:p>'
+      ? brandHeaderXml("INSPEÇÃO E VISTORIA DE EQUIPAMENTO")
       : '<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:sz w:val="14"/></w:rPr><w:t>A - Em conformidade | B - Programar manutenção | C - Falha crítica | D - Não se aplica</w:t></w:r></w:p><w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:rPr><w:sz w:val="14"/></w:rPr><w:t xml:space="preserve">BR LIFT - Página </w:t></w:r><w:fldSimple w:instr="PAGE"/><w:r><w:t xml:space="preserve"> de </w:t></w:r><w:fldSimple w:instr="NUMPAGES"/></w:p>';
     zip.file(
       name,
       '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:' +
         tag +
-        ' xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
+        " " +
+        brandHeaderNamespaces +
+        ">" +
         content +
         "</w:" +
         tag +
         ">",
     );
+    if (header) {
+      const filename = name.split("/").pop();
+      zip.file(
+        `word/_rels/${filename}.rels`,
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rIdBRLiftBrand" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/brlift-brand.png"/></Relationships>',
+      );
+    }
   }
   const documentFile = zip.file(DOCUMENT_XML_PATH);
   const headerFile = zip.file("word/header1.xml");

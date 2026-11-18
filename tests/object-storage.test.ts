@@ -393,13 +393,20 @@ test("migração é verificável, idempotente e dry-run não grava", async () =>
 function pdfTextPages(pdf: Buffer) {
   // Controlled PDFKit fixture using its built-in Helvetica fonts. Decode its
   // text operators without adding a production PDF parser dependency.
-  return [
-    ...pdf.toString("latin1").matchAll(/stream\r?\n([\s\S]*?)\r?\nendstream/g),
-  ]
+  const source = pdf.toString("latin1");
+  return [...source.matchAll(/(?:^|\r?\n)stream\r?\n/g)]
     .map((match) => {
       let content: string;
       try {
-        content = inflateSync(Buffer.from(match[1], "latin1")).toString(
+        // Binary streams can end in CR; matching CRLF as a delimiter would
+        // accidentally remove a compressed byte. PDF /Length is authoritative.
+        const dictionary = source.slice(
+          source.lastIndexOf(" obj", match.index),
+          match.index,
+        );
+        const length = Number(/\/Length\s+(\d+)\b/.exec(dictionary)?.[1]);
+        const start = match.index + match[0].length;
+        content = inflateSync(pdf.subarray(start, start + length)).toString(
           "latin1",
         );
       } catch {
@@ -806,11 +813,21 @@ test("PDF técnico preserva fotos, equipe e textos extensos com um cabeçalho e 
         ) + "\nFIM DAS OBSERVACOES EXTENSAS";
     }
     const pdf = await createReportPdf(record, cloud.storage);
+    if (process.env.RENDER_REPORT_REVIEW_DIR) {
+      await fs.mkdir(process.env.RENDER_REPORT_REVIEW_DIR, { recursive: true });
+      await fs.writeFile(
+        path.join(process.env.RENDER_REPORT_REVIEW_DIR, `${variant}.pdf`),
+        pdf,
+      );
+    }
     const text = pdfTextOperators(pdf);
     const pages = [...pdf.toString("latin1").matchAll(/\/Type\s*\/Page\b/g)]
       .length;
     assert.ok(pages >= 3);
-    assert.equal(text.filter((line) => line === "BR LIFT").length, pages);
+    assert.equal(
+      text.filter((line) => line.startsWith("BR LIFT")).length,
+      pages,
+    );
     assert.equal(text.filter((line) => line.startsWith("Pág. ")).length, pages);
     const isBodyLine = (line: string) =>
       !line.startsWith("BR LIFT") &&
@@ -868,13 +885,6 @@ test("PDF técnico preserva fotos, equipe e textos extensos com um cabeçalho e 
       );
     for (const image of Object.values(media))
       assert.ok(cloud.reads.includes(mediaStorageKey(image.id)));
-    if (process.env.RENDER_REPORT_REVIEW_DIR) {
-      await fs.mkdir(process.env.RENDER_REPORT_REVIEW_DIR, { recursive: true });
-      await fs.writeFile(
-        path.join(process.env.RENDER_REPORT_REVIEW_DIR, `${variant}.pdf`),
-        pdf,
-      );
-    }
   }
 });
 
