@@ -74,6 +74,18 @@ try {
   const page = await browser.newPage({
     viewport: { width: 1440, height: 1000 },
   });
+  async function pickCatalog(locator, value) {
+    if (await locator.evaluate((el) => el.tagName === "SELECT"))
+      return locator.selectOption(value);
+    await locator.fill("");
+    await locator.click();
+    const controls = await locator.getAttribute("aria-controls");
+    await page
+      .locator(
+        '[id="' + controls + '"] [role="option"][data-value="' + value + '"]',
+      )
+      .click();
+  }
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   async function openSection(...titles) {
@@ -81,6 +93,12 @@ try {
       const button = page.getByRole("button", { name: title, exact: true });
       if ((await button.getAttribute("aria-expanded")) !== "true")
         await button.click();
+      await page.evaluate(
+        () =>
+          new Promise((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(resolve)),
+          ),
+      );
     }
     assert.ok(
       (await page
@@ -89,6 +107,39 @@ try {
     );
   }
   const teamPath = ["A. Identificação", "Equipe do atendimento"];
+  async function assertSameDayEnd(panel, originalStart, originalEnd) {
+    async function fillTime(label, value) {
+      await panel
+        .getByLabel(label + ": hora", { exact: true })
+        .fill(value.slice(0, 2));
+      await panel
+        .getByLabel(label + ": minuto", { exact: true })
+        .fill(value.slice(3));
+      await panel
+        .getByLabel(label + ": minuto", { exact: true })
+        .press("Escape");
+    }
+    await fillTime("Início", "03:30");
+    await fillTime("Fim", "01:00");
+    const error = panel.getByRole("alert").filter({ hasText: "até 23:59" });
+    await error.waitFor();
+    assert.equal(
+      await panel
+        .getByLabel("Fim: hora", { exact: true })
+        .getAttribute("aria-invalid"),
+      "true",
+    );
+    await fillTime("Fim", "23:59");
+    assert.equal(await error.count(), 0);
+    assert.equal(
+      await panel
+        .getByLabel("Fim: hora", { exact: true })
+        .getAttribute("aria-invalid"),
+      "false",
+    );
+    await fillTime("Início", originalStart);
+    await fillTime("Fim", originalEnd);
+  }
   await page.goto(process.env.WEB_ORIGIN);
   await page.getByLabel("E-mail", { exact: true }).fill(email);
   await page.getByLabel("Senha", { exact: true }).fill(password);
@@ -224,7 +275,7 @@ try {
       .getAttribute("inputmode"),
     "numeric",
   );
-  await page.locator('select[aria-label="Cliente"]:focus').waitFor();
+  await page.locator('input[aria-label="Cliente"]:focus').waitFor();
   assert.equal(
     await page.getByLabel("O.S. OMIE", { exact: true }).inputValue(),
     "QA-AT-" + tag,
@@ -260,8 +311,21 @@ try {
     await page
       .getByLabel("Função do profissional 1", { exact: true })
       .isDisabled(),
-    true,
+    false,
   );
+  await openSection(...teamPath, "Profissional 1");
+  await page
+    .getByLabel("Função do profissional 1", { exact: true })
+    .selectOption("auxiliary");
+  assert.equal(
+    await page
+      .getByLabel("Função do profissional 1", { exact: true })
+      .inputValue(),
+    "auxiliary",
+  );
+  await page
+    .getByLabel("Função do profissional 1", { exact: true })
+    .selectOption("technician");
   const typeGroup = page.getByRole("group", {
     name: "Tipo de atendimento",
     exact: true,
@@ -379,6 +443,8 @@ try {
       const document = modal.getByLabel(kind === "Cliente" ? "CNPJ" : "CPF", {
         exact: true,
       });
+      if (kind === "Técnico")
+        assert.equal(await document.getAttribute("inputmode"), "numeric");
       await document.fill(identifier);
       assert.match(
         await document.inputValue(),
@@ -395,7 +461,28 @@ try {
   await catalog("Cliente", "Cliente QA " + tag, "123" + doc);
   const clientId = await page
     .getByLabel("Cliente", { exact: true })
-    .inputValue();
+    .getAttribute("data-value");
+  let searchRequests = 0;
+  const countSearch = (request) => {
+    if (request.method() === "GET" && request.url().includes("/api/catalog/"))
+      searchRequests++;
+  };
+  page.on("request", countSearch);
+  const clientSearch = page.getByLabel("Cliente", { exact: true });
+  await clientSearch.fill("cliente qa " + tag.toLowerCase());
+  const listId = await clientSearch.getAttribute("aria-controls");
+  assert.equal(
+    await page.locator('[id="' + listId + '"] [role="option"]').count(),
+    1,
+  );
+  await clientSearch.press("Enter");
+  assert.equal(await clientSearch.getAttribute("data-value"), clientId);
+  assert.equal(
+    searchRequests,
+    0,
+    "Digitação no autocomplete não consulta a API",
+  );
+  page.off("request", countSearch);
   await page.getByRole("button", { name: "+ Veículo", exact: true }).click();
   const vehicleModal = page.getByRole("dialog", {
     name: "Cadastro de Veículo",
@@ -429,7 +516,7 @@ try {
   await vehicleModal.waitFor({ state: "hidden" });
   const vehicleId = await page
     .getByLabel("Veículo", { exact: true })
-    .inputValue();
+    .getAttribute("data-value");
   assert.ok(vehicleId);
   await page
     .getByRole("button", { name: "Editar veículo", exact: true })
@@ -443,10 +530,7 @@ try {
   await saveVehicle.click();
   await vehicleModal.waitFor({ state: "hidden" });
   assert.match(
-    await page
-      .getByLabel("Veículo", { exact: true })
-      .locator("option:checked")
-      .innerText(),
+    await page.getByLabel("Veículo", { exact: true }).inputValue(),
     /FURGÃO TESTE/,
   );
   // Entering identification with only the team missing opens the first professional.
@@ -454,7 +538,7 @@ try {
     .getByRole("button", { name: "A. Identificação", exact: true })
     .click();
   await openSection("A. Identificação");
-  await page.locator('select[aria-label="Profissional 1"]:focus').waitFor();
+  await page.locator('input[aria-label="Profissional 1"]:focus').waitFor();
   assert.equal(
     await page
       .getByRole("button", { name: "Equipe do atendimento", exact: true })
@@ -464,8 +548,8 @@ try {
   await openSection(...teamPath, "Profissional 1");
   await catalog("Técnico", "Técnico QA " + tag, doc);
   const firstTech = await page
-    .locator('select[aria-label="Profissional 1"]')
-    .inputValue();
+    .locator('input[aria-label="Profissional 1"]')
+    .getAttribute("data-value");
   await page
     .getByLabel("Serviço cobrado do profissional 1", { exact: true })
     .selectOption("Sim");
@@ -474,7 +558,7 @@ try {
     .click();
   await openSection("B. Equipamento");
   await openSection("A. Identificação");
-  await page.locator('select[aria-label="Profissional 2"]:focus').waitFor();
+  await page.locator('input[aria-label="Profissional 2"]:focus').waitFor();
   await catalog(
     "Técnico",
     "Segundo técnico QA " + tag,
@@ -482,8 +566,8 @@ try {
     1,
   );
   const secondTech = await page
-    .locator('select[aria-label="Profissional 2"]')
-    .inputValue();
+    .locator('input[aria-label="Profissional 2"]')
+    .getAttribute("data-value");
   await page
     .getByLabel("Serviço cobrado do profissional 2", { exact: true })
     .selectOption("Não");
@@ -504,8 +588,9 @@ try {
     .selectOption("Sim");
   assert.equal(
     await page
-      .locator('select[aria-label="Profissional 3"]')
-      .locator(`option[value="${firstTech}"]`)
+      .locator('input[aria-label="Profissional 3"]')
+      .locator("..")
+      .locator(`[role="option"][data-value="${firstTech}"]`)
       .count(),
     0,
   );
@@ -574,14 +659,14 @@ try {
   const eqSection = page.locator("section").filter({
     has: page.getByRole("heading", { name: "B. Equipamento", exact: true }),
   });
+  const equipmentSearch = eqSection.getByLabel("Equipamento", { exact: true });
+  await equipmentSearch.click();
   assert.equal(
-    await eqSection
-      .getByLabel("Equipamento", { exact: true })
-      .locator("option")
-      .count(),
+    await eqSection.getByRole("option").count(),
     1,
     "Novo cliente não pode listar equipamentos de outros clientes",
   );
+  await equipmentSearch.press("Escape");
   // Permanent data is grey and cannot receive mouse, keyboard or programmatic focus.
   for (const label of [
     "Tipo",
@@ -681,7 +766,7 @@ try {
   await equipmentModal.waitFor({ state: "hidden" });
   const equipmentId = await page
     .getByLabel("Equipamento", { exact: true })
-    .inputValue();
+    .getAttribute("data-value");
   assert.ok(equipmentId);
   assert.equal(
     await eqSection.getByLabel("Marca", { exact: true }).inputValue(),
@@ -781,10 +866,7 @@ try {
   );
   assert.equal(updatedEquipment.data.model, "LTM REVISADO " + tag);
   assert.equal(
-    await eqSection
-      .getByLabel("Equipamento", { exact: true })
-      .locator("option:checked")
-      .innerText(),
+    await eqSection.getByLabel("Equipamento", { exact: true }).inputValue(),
     `LTM REVISADO ${tag} - SER-${tag}`,
   );
   await eqSection.getByLabel("Operador", { exact: true }).fill("Operador QA");
@@ -802,7 +884,9 @@ try {
     .click();
   await clientModal.waitFor({ state: "hidden" });
   assert.equal(
-    await eqSection.getByLabel("Equipamento", { exact: true }).inputValue(),
+    await eqSection
+      .getByLabel("Equipamento", { exact: true })
+      .getAttribute("data-value"),
     equipmentId,
   );
   assert.equal(
@@ -833,11 +917,18 @@ try {
     true,
   );
   await page.getByLabel("Local", { exact: true }).focus();
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      ),
+  );
   await page.getByLabel("Local", { exact: true }).press("Tab");
-  await page.locator('select[aria-label="Profissional 1"]:focus').waitFor();
+  await page.waitForTimeout(150);
+  await page.locator('input[aria-label="Profissional 1"]:focus').waitFor();
   assert.equal(
     await page
-      .locator('select[aria-label="Profissional 1"]')
+      .locator('input[aria-label="Profissional 1"]')
       .evaluate((el) => el === document.activeElement),
     true,
   );
@@ -860,38 +951,24 @@ try {
     "true",
   );
   await page.keyboard.press("Tab");
-  await page.locator('select[aria-label="Equipamento"]:focus').waitFor();
+  await page.locator('input[aria-label="Equipamento"]:focus').waitFor();
   assert.equal(
     await page
       .getByLabel("Equipamento", { exact: true })
       .evaluate((el) => el === document.activeElement),
     true,
   );
-  await openSection("C. Motivos, serviços e pendências");
+  await openSection("C. Descrição do serviço");
   await page.getByRole("button", { name: "+ Motivo", exact: true }).click();
-  await page
-    .getByLabel("Descrição do motivo", { exact: true })
-    .fill("Manutenção preventiva");
-  await page.getByLabel("Descrição do motivo", { exact: true }).press("End");
-  await page.getByLabel("Descrição do motivo", { exact: true }).press("Enter");
-  assert.ok(
-    (
-      await page.getByLabel("Descrição do motivo", { exact: true }).inputValue()
-    ).includes("\n"),
-  );
-  await page
-    .getByLabel("Descrição do motivo", { exact: true })
-    .press("Control+Enter");
-  await openSection("Serviço realizado", "Serviço realizado 1");
   assert.equal(
     await page
-      .getByRole("button", { name: "Serviço deste motivo", exact: true })
+      .getByRole("button", { name: "Serviço realizado", exact: true })
       .count(),
     0,
   );
   assert.equal(
     await page
-      .getByRole("button", { name: "+ Serviço deste motivo", exact: true })
+      .getByRole("button", { name: "Serviço realizado 1", exact: true })
       .count(),
     0,
   );
@@ -934,10 +1011,44 @@ try {
       .getAttribute("autocapitalize"),
     "none",
   );
-  await openSection("Serviço realizado", "Serviço realizado 1");
   await page
     .getByLabel("Serviço concluído?", { exact: true })
     .selectOption("Sim");
+  const completedBox = await page
+    .getByLabel("Serviço concluído?", { exact: true })
+    .boundingBox();
+  const photoButtonBox = await page
+    .locator(".br-compact-completed + .br-photos .br-photo-action")
+    .last()
+    .boundingBox();
+  assert.equal(
+    Math.round(completedBox.width),
+    Math.round(photoButtonBox.width),
+  );
+  async function assertPhotoActionSpacing() {
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 1000 });
+      const add = await page
+        .getByLabel("Adicionar fotos", { exact: true })
+        .locator("..")
+        .boundingBox();
+      const remove = await page
+        .getByRole("button", { name: "Remover motivo", exact: true })
+        .boundingBox();
+      assert.ok(
+        remove.y - (add.y + add.height) >= 11.5,
+        "Ações de foto e remoção precisam de pelo menos 12px de separação",
+      );
+      assert.equal(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= window.innerWidth,
+        ),
+        true,
+      );
+    }
+    await page.setViewportSize({ width: 1440, height: 1000 });
+  }
+  await assertPhotoActionSpacing();
   const photo = await sharp({
     create: { width: 1000, height: 500, channels: 3, background: "#cda332" },
   })
@@ -949,6 +1060,7 @@ try {
   ]);
   await page.getByAltText("evidencia.png", { exact: true }).waitFor();
   await page.getByAltText("evidencia-2.png", { exact: true }).waitFor();
+  await assertPhotoActionSpacing();
   const servicePath = await page
     .locator('[data-fold][data-open="true"]')
     .evaluateAll((els) => els.map((el) => el.dataset.fold));
@@ -977,7 +1089,7 @@ try {
   // Only an explicit header toggle closes everything.
   await page
     .getByRole("button", {
-      name: "C. Motivos, serviços e pendências",
+      name: "C. Descrição do serviço",
       exact: true,
     })
     .click();
@@ -989,29 +1101,19 @@ try {
     })
     .click();
   assert.equal(await page.locator('[data-fold][data-open="true"]').count(), 0);
-  await openSection(
-    "C. Motivos, serviços e pendências",
-    "Motivo 1",
-    "Serviço realizado",
-    "Serviço realizado 1",
-  );
+  await openSection("C. Descrição do serviço", "Motivo 1");
   // Changing sections collapses the old branch without discarding its service.
   await openSection("A. Identificação");
   assert.equal(
     await page
       .getByRole("button", {
-        name: "C. Motivos, serviços e pendências",
+        name: "C. Descrição do serviço",
         exact: true,
       })
       .getAttribute("aria-expanded"),
     "false",
   );
-  await openSection(
-    "C. Motivos, serviços e pendências",
-    "Motivo 1",
-    "Serviço realizado",
-    "Serviço realizado 1",
-  );
+  await openSection("C. Descrição do serviço", "Motivo 1");
   assert.equal(
     await page
       .getByRole("textbox", { name: "Serviço realizado", exact: true })
@@ -1041,7 +1143,6 @@ try {
       .getAttribute("aria-expanded"),
     "false",
   );
-  await openSection("Serviço realizado", "Serviço realizado 1");
   await page
     .getByRole("textbox", { name: "Serviço realizado", exact: true })
     .fill("Segundo motivo, outro serviço");
@@ -1099,7 +1200,7 @@ try {
   await partModal.waitFor({ state: "hidden" });
   const partId = await page
     .getByLabel("Peça do catálogo", { exact: true })
-    .inputValue();
+    .getAttribute("data-value");
   assert.ok(partId);
   assert.equal(
     await page.getByLabel("Descrição da peça", { exact: true }).inputValue(),
@@ -1122,7 +1223,7 @@ try {
     "decimal",
   );
   await page
-    .getByLabel("Tipo de serviço", { exact: true })
+    .getByLabel("Tipo de aplicação", { exact: true })
     .selectOption("replaced");
   await page.getByRole("button", { name: "Editar peça", exact: true }).click();
   await partModal
@@ -1141,7 +1242,7 @@ try {
     "2",
   );
   assert.equal(
-    await page.getByLabel("Tipo de serviço", { exact: true }).inputValue(),
+    await page.getByLabel("Tipo de aplicação", { exact: true }).inputValue(),
     "replaced",
   );
   assert.equal(
@@ -1190,7 +1291,7 @@ try {
   const secondPart = page
     .getByLabel("Peça do catálogo", { exact: true })
     .last();
-  await secondPart.selectOption(partId);
+  await pickCatalog(secondPart, partId);
   assert.equal(
     await page
       .getByLabel("Descrição da peça", { exact: true })
@@ -1204,7 +1305,7 @@ try {
   );
   assert.equal(
     await page
-      .getByLabel("Tipo de serviço", { exact: true })
+      .getByLabel("Tipo de aplicação", { exact: true })
       .last()
       .inputValue(),
     "requested",
@@ -1313,6 +1414,7 @@ try {
     "false",
   );
   await work.getByLabel("Fim: minuto", { exact: true }).press("Escape");
+  await assertSameDayEnd(work, "08:00", "17:00");
   assert.equal(
     await work
       .getByRole("dialog", { name: "Selecionar horário: Fim", exact: true })
@@ -1360,12 +1462,25 @@ try {
       ["Início", start],
       ["Fim", end],
     ]) {
+      await panel.getByLabel(label + ": hora", { exact: true }).focus();
+      await panel.getByLabel(label + ": hora", { exact: true }).fill("");
       await panel
         .getByLabel(label + ": hora", { exact: true })
         .fill(value.slice(0, 2));
+      await panel.getByLabel(label + ": minuto", { exact: true }).focus();
       await panel
         .getByLabel(label + ": minuto", { exact: true })
         .fill(value.slice(3));
+      assert.equal(
+        await panel.getByLabel(label + ": hora", { exact: true }).inputValue(),
+        value.slice(0, 2),
+      );
+      assert.equal(
+        await panel
+          .getByLabel(label + ": minuto", { exact: true })
+          .inputValue(),
+        value.slice(3),
+      );
       await panel
         .getByLabel(label + ": minuto", { exact: true })
         .press("Escape");
@@ -1374,9 +1489,12 @@ try {
       .getByLabel("Pausa em minutos (opcional)", { exact: true })
       .fill(pause);
     for (const label of ["KM inicial", "KM final"])
-      await panel
-        .getByRole("button", { name: "Não se aplica: " + label, exact: true })
-        .click();
+      if (
+        (await panel.getByLabel(label, { exact: true }).inputValue()) !== "N/A"
+      )
+        await panel
+          .getByRole("button", { name: "Não se aplica: " + label, exact: true })
+          .click();
   }
   await addPeriod("Trabalho", "Trabalho", 2, "18:00", "19:00", "15");
   assert.equal(
@@ -1718,7 +1836,7 @@ try {
   for (const title of [
     "A. Identificação",
     "B. Equipamento",
-    "C. Motivos, serviços e pendências",
+    "C. Descrição do serviço",
     "D. Peças utilizadas / solicitadas",
     "E. Cronograma",
     "F. Finalização",
@@ -1765,7 +1883,9 @@ try {
     .getByRole("button", { name: "Editar", exact: true })
     .click();
   assert.equal(
-    await page.getByLabel("Peça do catálogo", { exact: true }).inputValue(),
+    await page
+      .getByLabel("Peça do catálogo", { exact: true })
+      .getAttribute("data-value"),
     partId,
   );
   assert.equal(
@@ -1781,11 +1901,13 @@ try {
     "2",
   );
   assert.equal(
-    await page.getByLabel("Tipo de serviço", { exact: true }).inputValue(),
+    await page.getByLabel("Tipo de aplicação", { exact: true }).inputValue(),
     "replaced",
   );
   assert.equal(
-    await page.locator('select[aria-label="Profissional 2"]').inputValue(),
+    await page
+      .locator('input[aria-label="Profissional 2"]')
+      .getAttribute("data-value"),
     secondTech,
   );
   assert.equal(
@@ -1834,20 +1956,22 @@ try {
     .getByRole("button", { name: "Remover profissional 1", exact: true })
     .click();
   assert.equal(
-    await page.locator('select[aria-label="Profissional 1"]').inputValue(),
+    await page
+      .locator('input[aria-label="Profissional 1"]')
+      .getAttribute("data-value"),
     secondTech,
   );
   assert.equal(
     await page
       .getByLabel("Função do profissional 1", { exact: true })
       .inputValue(),
-    "technician",
+    "auxiliary",
   );
   assert.equal(
     await page
       .getByLabel("Função do profissional 1", { exact: true })
       .isDisabled(),
-    true,
+    false,
   );
   assert.equal(
     await page.getByLabel("Local", { exact: true }).inputValue(),
@@ -1875,7 +1999,7 @@ try {
   await page
     .getByRole("group", { name: "Quem trabalhou neste dia?", exact: true })
     .getByRole("checkbox", {
-      name: "SEGUNDO TÉCNICO QA " + tag + " (Técnico)",
+      name: "SEGUNDO TÉCNICO QA " + tag + " (Auxiliar)",
       exact: true,
     })
     .check();
@@ -1897,14 +2021,16 @@ try {
     .getByRole("button", { name: "+ Nova inspeção", exact: true })
     .click();
   await page.getByLabel("O.S. OMIE", { exact: true }).fill("QA-IN-" + tag);
-  await page.getByLabel("Cliente", { exact: true }).selectOption(clientId);
-  await page
-    .getByLabel("Inspeção realizada por", { exact: true })
-    .selectOption(firstTech);
-  await page.getByLabel("Veículo", { exact: true }).selectOption(vehicleId);
-  await page
-    .getByLabel("Equipamento", { exact: true })
-    .selectOption(equipmentId);
+  await pickCatalog(page.getByLabel("Cliente", { exact: true }), clientId);
+  await pickCatalog(
+    page.getByLabel("Inspeção realizada por", { exact: true }),
+    firstTech,
+  );
+  await pickCatalog(page.getByLabel("Veículo", { exact: true }), vehicleId);
+  await pickCatalog(
+    page.getByLabel("Equipamento", { exact: true }),
+    equipmentId,
+  );
   for (const label of ["DATA DE VISTORIA", "PRÓXIMA VISTORIA"]) {
     await page
       .getByRole("button", { name: "Abrir calendário: " + label, exact: true })
@@ -1989,6 +2115,13 @@ try {
     .fill("Vistoria em campo");
   await addPeriod("Deslocamento de ida", "Ida", 1, "07:00", "08:00");
   await addPeriod("Trabalho", "Trabalho", 1, "08:00", "10:00", "15");
+  await assertSameDayEnd(
+    page
+      .getByRole("heading", { name: "Trabalho 1", exact: true })
+      .locator(".."),
+    "08:00",
+    "10:00",
+  );
   const inspectionSections = createTemplateSections();
   const titleFor = (item) => `${item.code} — ${item.name}`;
   await openSection("Checklist técnico");
@@ -2092,9 +2225,10 @@ try {
   await page
     .getByLabel("RESULTADO DA VISTORIA", { exact: true })
     .selectOption("Aprovada");
-  await page
-    .getByLabel("Inspeção aprovada por", { exact: true })
-    .selectOption(secondTech);
+  await pickCatalog(
+    page.getByLabel("Inspeção aprovada por", { exact: true }),
+    secondTech,
+  );
   await sign("Assinatura do técnico", "Inspetor QA");
   await sign("Assinatura do cliente", "Cliente da inspeção");
   await page
@@ -2193,11 +2327,12 @@ try {
   await page
     .getByRole("button", { name: "+ Novo atendimento", exact: true })
     .click();
-  await page.getByLabel("Cliente", { exact: true }).selectOption(clientId);
+  await pickCatalog(page.getByLabel("Cliente", { exact: true }), clientId);
   await openSection("B. Equipamento");
-  await page
-    .getByLabel("Equipamento", { exact: true })
-    .selectOption(equipmentId);
+  await pickCatalog(
+    page.getByLabel("Equipamento", { exact: true }),
+    equipmentId,
+  );
   assert.equal(
     await page.getByLabel("Capacidade nominal", { exact: true }).count(),
     0,
@@ -2223,6 +2358,39 @@ try {
     equipmentId,
   );
   assert.equal(preservedEquipment.data.nominalCapacity, "80 T");
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Cadastros", exact: true }).click();
+  const basicUser = await page.evaluate(
+    async (id) =>
+      (await (await fetch("/api/users")).json()).users.find(
+        (u) => u.technician?.id === id,
+      ),
+    firstTech,
+  );
+  assert.ok(basicUser && basicUser.hasAccess === false);
+  const basicCard = page
+    .locator(".br-user-card")
+    .filter({ has: page.getByText(basicUser.name, { exact: true }) });
+  await basicCard
+    .getByText("Sem acesso ao sistema — cadastro básico", { exact: true })
+    .waitFor();
+  await basicCard.getByRole("button", { name: "Editar", exact: true }).click();
+  const basicDialog = page.getByRole("dialog");
+  assert.equal(
+    await basicDialog
+      .getByLabel("E-mail de acesso", { exact: true })
+      .inputValue(),
+    "",
+  );
+  assert.equal(
+    await basicDialog
+      .getByLabel("E-mail de acesso", { exact: true })
+      .getAttribute("required"),
+    null,
+  );
+  await basicDialog
+    .getByRole("button", { name: "Cancelar", exact: true })
+    .click();
   assert.deepEqual(errors, []);
   for (const file of ["atendimento.pdf", "inspecao.pdf"])
     assert.equal(

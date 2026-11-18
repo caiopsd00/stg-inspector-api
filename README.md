@@ -33,6 +33,11 @@ Dias antigos permanecem intactos: ao editar, seus horários são atribuídos ape
 ao primeiro técnico, sem inventar presença para o restante da equipe. Retirar um
 profissional da equipe exige revisar quem trabalhou nos dias afetados.
 
+No relatório e na inspeção, cada período pertence a uma única data e termina até
+23:59. Um fim anterior ao início é inválido; a continuação após meia-noite deve
+ser preenchida em outro dia do cronograma, a partir de 00:00. A regra é validada
+também pela API e não altera automaticamente registros antigos.
+
 ## Desenvolvimento: somente o banco no Docker
 
 Revisão de publicação/segredos: [SECURITY.md](SECURITY.md).
@@ -234,3 +239,28 @@ O adaptador GCS anterior permanece opcional e inativo no modo `local/local`;
 [deploy/STORAGE.md](deploy/STORAGE.md) documenta uma migração futura, fora deste piloto.
 Não use a senha do banco de desenvolvimento em produção.
 O código histórico foi arquivado fora deste repositório e não entra no build/deploy.
+
+### Usuários e profissionais
+
+O seletor de técnicos é uma projeção dos usuários com perfil técnico e vínculo
+único em `technicians.user_id`. Nome e CPF são os atuais, por ID, inclusive nos
+relatórios e inspeções anteriores; o histórico de códigos de peças permanece.
+O cadastro rápido de nome/CPF cria um usuário básico, sem e-mail nem senha e sem
+acesso ao login. Um administrador pode editar esse usuário em Cadastros para
+definir e-mail e senha inicial e liberar seu acesso.
+
+Migrations novas alteram somente estrutura, constraints e índices: não criam,
+unificam ou corrigem cadastros existentes. Migrations históricas já aplicadas não
+são reescritas. Operações normais da aplicação continuam criando/editando usuários
+quando o operador solicita; isso não é uma correção automática de dados antigos.
+
+A `009_unified_professionals.sql` contém apenas DDL: permite usuários sem login,
+exige vínculo de usuário para cada técnico e mantém e-mail/senha consistentes.
+Não contém verificações procedurais nem correções de dados. Antes de aplicar o
+`NOT NULL`, o operador deve corrigir manualmente os técnicos sem usuário.
+Nenhum usuário é inventado e nenhum CPF é escolhido pela migration.
+Correções de dados antigos são executadas manualmente pelo operador, antes da
+migration, sem scripts de correção no startup ou deploy. Ao unificar cadastros,
+preserve o usuário existente, seu perfil, credenciais e CPF do técnico já vinculado.
+Não resete o banco. Em desenvolvimento, após a correção manual, execute
+`npm run db:migrate`; em produção, publique com `brlift-deploy`.

@@ -8,6 +8,7 @@ import {
   participantDay,
   dayPeriods,
   periodLabels,
+  periodSummary,
   hasDayData,
   hasPeriodData,
   reportTypeLabels,
@@ -350,16 +351,9 @@ export async function createReportPdf(
   ]);
   for (const [i, person] of (record.payload.teamSnapshot ?? []).entries())
     pairGrid([
-      [
-        i === 0
-          ? "Técnico responsável"
-          : person.role === "auxiliary"
-            ? "Auxiliar"
-            : "Técnico",
-        person.name,
-      ],
+      [person.role === "auxiliary" ? "Auxiliar" : "Técnico", person.name],
       ...(person.charged
-        ? [["Serviço cobrado", person.charged] as [string, string]]
+        ? [["Cobrado", person.charged] as [string, string]]
         : []),
     ]);
   if (!record.payload.teamSnapshot?.length)
@@ -406,22 +400,41 @@ export async function createReportPdf(
     return Math.min(reasonHeight, 45) + Math.min(serviceHeight, 40) + 24;
   };
   section(
-    "Motivos e serviços",
+    "Descrição do serviço",
     data.reasons[0] ? reasonLeadHeight(data.reasons[0]) : 36,
   );
   if (!data.reasons.length)
     textBlock("Nenhum motivo informado.", { color: "#777777" });
   for (const [ri, reason] of data.reasons.entries()) {
+    if (ri > 0) {
+      ensure(90);
+      doc
+        .moveTo(MARGIN, doc.y + 4)
+        .lineTo(MARGIN + width, doc.y + 4)
+        .lineWidth(1)
+        .strokeColor("#c9a84c")
+        .stroke();
+      doc.y += 18;
+    }
     ensure(reasonLeadHeight(reason));
-    listItem(ri + 1, reason.description);
+    listItem(
+      ri + 1,
+      reason.description === reason.services[0]?.description
+        ? `Motivo ${ri + 1}`
+        : reason.description,
+    );
+    if (!reason.services.length && reason.pending?.trim())
+      textBlock(`Pendências: ${reason.pending}`);
     for (const [si, service] of reason.services.entries()) {
       ensure(60);
       textBlock(
         `${reason.services.length > 1 ? "Serviço " + (si + 1) : "Serviço realizado"}: ${clean(service.description)}`,
       );
+      if (service.notes) textBlock(`Observações: ${service.notes}`);
+      if (si === 0 && reason.pending?.trim())
+        textBlock(`Pendências: ${reason.pending}`);
       if (service.completed)
         textBlock(`Serviço concluído: ${service.completed}`);
-      if (service.notes) textBlock(`Observações: ${service.notes}`);
       for (const photo of service.photos) {
         await image(photo, { width: 360, height: 240 });
       }
@@ -435,16 +448,8 @@ export async function createReportPdf(
     listItem(
       i + 1,
       part.description || part.code,
-      `Código: ${part.code || "—"}  •  Fornecedor: ${part.supplier || "—"}  •  Quantidade: ${part.quantity}  •  Tipo de serviço: ${part.kind === "replaced" ? "Substituída" : "Solicitada"}`,
+      `Código: ${part.code || "—"}  •  Fornecedor: ${part.supplier || "—"}  •  Quantidade: ${part.quantity}  •  Tipo de aplicação: ${part.kind === "replaced" ? "Substituição" : "Solicitação"}`,
     );
-
-  section("Pendências / próximos passos");
-  const pending = data.reasons
-    .map((reason) => reason.pending?.trim())
-    .filter(Boolean);
-  if (!pending.length)
-    textBlock("Nenhuma pendência registrada.", { color: "#777777" });
-  for (const [i, item] of pending.entries()) listItem(i + 1, item);
 
   const days = data.days.filter(hasDayData);
   section("Cronograma de atendimento", days.length ? 150 : 80);
@@ -519,7 +524,7 @@ export async function createReportPdf(
             ]
           : []),
         [
-          "KM atribuído",
+          "KM total",
           ownTotals.km
             ? `${ownTotals.km} km`
             : person.sameVehicleAs
@@ -528,11 +533,17 @@ export async function createReportPdf(
         ],
       ]);
       for (const kind of ["outbound", "work", "inbound"] as const) {
+        const totalLabel = {
+          outbound: "ida",
+          work: "trabalho",
+          inbound: "volta",
+        }[kind];
         const periods = dayPeriods(schedule).filter(
           (p) => p.kind === kind && hasPeriodData(p),
         );
         for (const [pi, period] of periods.entries()) {
-          ensure(96);
+          // Keep the period range, readings and totals on the same page.
+          ensure(168);
           pairGrid([
             [
               `${periodLabels[kind]} ${pi + 1}`,
@@ -547,6 +558,7 @@ export async function createReportPdf(
                   ["KM final", period.odometerEnd],
                 ] as [string, unknown][])
               : []),
+            [`Totais ${totalLabel} ${pi + 1}`, periodSummary(period)],
           ]);
         }
       }
@@ -613,10 +625,12 @@ export async function createReportPdf(
   const signatureWidth = (width - signatureGap) / 2;
   const signatures: Array<[string, Media | undefined, string, string]> = [
     [
-      "Assinatura do técnico",
+      data.primaryTechnicianRole === "auxiliary"
+        ? "Assinatura do auxiliar"
+        : "Assinatura do técnico",
       data.technicianSignature,
       record.payload.technicianSnapshot?.name || record.technicianName || "",
-      "Técnico",
+      data.primaryTechnicianRole === "auxiliary" ? "Auxiliar" : "Técnico",
     ],
     [
       "Assinatura do cliente",

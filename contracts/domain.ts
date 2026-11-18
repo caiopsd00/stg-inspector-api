@@ -119,6 +119,7 @@ export type TeamMember = {
 export type Report = {
   formRevision?: 2;
   primaryTechnicianCharged?: YesNo;
+  primaryTechnicianRole?: TeamMember["role"];
   type: string;
   operator: string;
   requester: string;
@@ -324,7 +325,7 @@ export function reportTeam(
   return [
     {
       technicianId: entry.technicianId || "",
-      role: "technician",
+      role: p.primaryTechnicianRole || "technician",
       ...(p.primaryTechnicianCharged !== undefined
         ? { charged: p.primaryTechnicianCharged }
         : {}),
@@ -342,6 +343,7 @@ export function withReportTeam<
     payload: {
       ...entry.payload,
       primaryTechnicianCharged: team[0]?.charged,
+      primaryTechnicianRole: team[0]?.role || "technician",
       days: (entry.payload.days || []).map((day: Day) => {
         if (day.participants === undefined) return day;
         let current = day;
@@ -447,6 +449,8 @@ export function localDate(date = new Date()) {
     String(date.getDate()).padStart(2, "0"),
   ].join("-");
 }
+const sameDayPeriodMessage =
+  "O fim deve ser igual ou posterior ao início, no mesmo dia (até 23:59). Para continuar após meia-noite, adicione outro dia ao cronograma.";
 export function periodMinutes(p?: Period) {
   if (!p?.start || !p.end) return 0;
   const parse = (s: string) => {
@@ -456,7 +460,8 @@ export function periodMinutes(p?: Period) {
     return h * 60 + m;
   };
   const diff = parse(p.end) - parse(p.start);
-  return diff < 0 ? diff + 1440 : diff;
+  if (diff < 0) throw Error(sameDayPeriodMessage);
+  return diff;
 }
 export function dayPeriods(d: Day): DayPeriod[] {
   if (d.periods !== undefined) return d.periods;
@@ -509,6 +514,80 @@ export function periodNetMinutes(p: DayPeriod) {
   if (!Number.isFinite(pause) || pause < 0 || pause > duration)
     throw Error("A pausa não pode ultrapassar o período relacionado.");
   return duration - pause;
+}
+export function orderedPeriods(periods: DayPeriod[]) {
+  return (["outbound", "work", "inbound"] as const).flatMap((kind) =>
+    periods.filter((p) => p.kind === kind),
+  );
+}
+/** A single calendar day: times never roll over to the next date.
+ * N/A doesn't reset KM. Continue after midnight in another schedule day. */
+export function periodContinuityIssues(periods: DayPeriod[]): Array<{
+  id: string;
+  field: "start" | "end" | "odometerStart" | "odometerEnd";
+  message: string;
+}> {
+  const issues: ReturnType<typeof periodContinuityIssues> = [];
+  let previousEnd: number | undefined;
+  let previousKm: number | undefined;
+  const minutes = (v: string) =>
+    /^([01]\d|2[0-3]):[0-5]\d$/.test(v)
+      ? Number(v.slice(0, 2)) * 60 + Number(v.slice(3))
+      : undefined;
+  for (const p of orderedPeriods(periods)) {
+    for (const field of ["odometerStart", "odometerEnd"] as const) {
+      const value = p[field];
+      if (!value || value === "N/A" || readingIssue(value)) continue;
+      const n = Number(value);
+      if (previousKm !== undefined && n < previousKm)
+        issues.push({
+          id: p.id,
+          field,
+          message:
+            "O KM não pode retroceder em relação à leitura anterior do cronograma.",
+        });
+      previousKm = Math.max(previousKm ?? n, n);
+    }
+    const start = minutes(p.start),
+      end = minutes(p.end);
+    if (start === undefined) continue;
+    if (previousEnd !== undefined && start < previousEnd)
+      issues.push({
+        id: p.id,
+        field: "start",
+        message:
+          "O início deve ser igual ou posterior ao fim do período anterior.",
+      });
+    if (end === undefined) {
+      previousEnd = Math.max(previousEnd ?? start, start);
+      continue;
+    }
+    if (end < start)
+      issues.push({
+        id: p.id,
+        field: "end",
+        message: sameDayPeriodMessage,
+      });
+    previousEnd = Math.max(previousEnd ?? start, start, end);
+  }
+  return issues;
+}
+export function periodSummary(p: DayPeriod): string {
+  try {
+    const seconds = Math.round(periodNetMinutes(p) * 60);
+    const hours = Math.floor(seconds / 3600),
+      remainder = Math.floor((seconds % 3600) / 60),
+      extraSeconds = seconds % 60;
+    const km =
+      p.odometerStart === "N/A" || p.odometerEnd === "N/A"
+        ? "N/A"
+        : p.odometerStart && p.odometerEnd
+          ? periodKm(p).toLocaleString("pt-BR", { maximumFractionDigits: 6 })
+          : "—";
+    return `${hours}h${String(remainder).padStart(2, "0")}min${extraSeconds ? " " + extraSeconds + "s" : ""} líquidos · ${km} km`;
+  } catch (error) {
+    return (error as Error).message;
+  }
 }
 export function hasDayData(d: Day) {
   if (d.participants !== undefined)
@@ -588,6 +667,15 @@ export function validateSchedule(
     if (!/^\d{4}-\d{2}-\d{2}$/.test(day.date))
       throw Error("Informe a data de cada dia preenchido.");
     dayTotals(day);
+    const resolved = day.participants
+      ? day.participants
+          .filter((p) => p.present)
+          .map((p) => participantDay(day, p.technicianId))
+      : [day];
+    for (const timeline of resolved) {
+      const issue = periodContinuityIssues(dayPeriods(timeline))[0];
+      if (issue) throw Error(issue.message);
+    }
     if (!finalized) continue;
     const present = day.participants?.filter((person) => person.present);
     if (present && !present.length)
@@ -659,7 +747,7 @@ export function validateReport(p: Report, finalized: boolean) {
       !["requested", "replaced"].includes(part.kind)
     )
       throw new Error(
-        "Peças precisam de código, quantidade positiva e tipo de serviço.",
+        "Peças precisam de código, quantidade positiva e tipo de aplicação.",
       );
   if (finalized) {
     if (isNonTravelReport(p.type) && hasReportTravel(p))

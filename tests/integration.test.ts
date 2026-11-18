@@ -39,6 +39,83 @@ test(
       if (failure) throw failure;
     };
     await migrate();
+    await scenario(
+      "migration 009 contém somente DDL e preserva os cadastros",
+      async () => {
+        const db = await pool.connect();
+        const sql = await fs.readFile(
+          "database/009_unified_professionals.sql",
+          "utf8",
+        );
+        assert.doesNotMatch(
+          sql,
+          /INSERT INTO users|UPDATE technicians|sync_professional_user/,
+        );
+        const statements = sql
+          .replace(/--[^\n]*/g, "")
+          .split(";")
+          .map((statement) => statement.trim())
+          .filter(Boolean);
+        assert.equal(statements.length, 4);
+        for (const statement of statements)
+          assert.match(statement, /^ALTER TABLE\s/i);
+        try {
+          await db.query("BEGIN");
+          await db.query("CREATE SCHEMA upgrade_professionals");
+          await db.query("SET LOCAL search_path TO upgrade_professionals");
+          await db.query(
+            "CREATE TABLE users(id text PRIMARY KEY,name text,email text NOT NULL,password_hash text NOT NULL,role text,active boolean); CREATE TABLE technicians(id text PRIMARY KEY,name text,cpf text,user_id text UNIQUE REFERENCES users(id),active boolean,version int DEFAULT 1,updated_at timestamptz)",
+          );
+          await db.query(
+            "INSERT INTO users VALUES('existing','HOMÔNIMO','existing@example.test','hash','technician',true); INSERT INTO technicians(id,name,cpf,user_id,active) VALUES('linked','HOMÔNIMO','11111111111','existing',true),('unlinked','HOMÔNIMO','22222222222',NULL,true)",
+          );
+          await db.query("SAVEPOINT before_migration");
+          await assert.rejects(
+            db.query(sql),
+            // Native NOT NULL validation, not a procedural migration preflight.
+            (error: any) => error.code === "23502",
+          );
+          await db.query("ROLLBACK TO SAVEPOINT before_migration");
+          assert.equal(
+            (await db.query("SELECT count(*)::int n FROM users")).rows[0].n,
+            1,
+          );
+          assert.equal(
+            (
+              await db.query(
+                "SELECT user_id FROM technicians WHERE id='unlinked'",
+              )
+            ).rows[0].user_id,
+            null,
+          );
+          // Explicit operator repair in the TEST fixture, not in a migration.
+          await db.query(
+            "INSERT INTO users VALUES('second','HOMÔNIMO','second@example.test','hash','technician',true); UPDATE technicians SET user_id='second' WHERE id='unlinked'",
+          );
+          const before = (
+            await db.query("SELECT * FROM technicians ORDER BY id")
+          ).rows;
+          await db.query(sql);
+          assert.deepEqual(
+            (await db.query("SELECT * FROM technicians ORDER BY id")).rows,
+            before,
+          );
+          assert.equal(
+            (await db.query("SELECT count(*)::int n FROM users")).rows[0].n,
+            2,
+          );
+          await assert.rejects(
+            db.query(
+              "INSERT INTO technicians(id,name,cpf) VALUES('orphan','NO','33333333333')",
+            ),
+            { code: "23502" },
+          );
+        } finally {
+          await db.query("ROLLBACK");
+          db.release();
+        }
+      },
+    );
     const tag = crypto.randomUUID(),
       email = tag + "@example.test",
       password = crypto.randomBytes(16).toString("hex");
@@ -340,6 +417,105 @@ test(
         },
         "PUT",
       );
+      await scenario(
+        "cadastro rápido cria usuário sem login; edição e ativação mantêm os mesmos IDs",
+        async () => {
+          const tid = crypto.randomUUID(),
+            cpf = String(crypto.randomInt(100000000, 999999999)).padStart(
+              11,
+              "0",
+            );
+          await call(
+            "/api/catalog/technicians/" + tid,
+            {
+              name: "Profissional básico " + tag,
+              identifier: cpf,
+              baseVersion: 0,
+            },
+            "PUT",
+          );
+          const basic = (await call("/api/users")).users.find(
+            (u: any) => u.technician?.id === tid,
+          );
+          assert.ok(basic);
+          assert.equal(basic.hasAccess, false);
+          assert.equal(basic.email, "");
+          const creds = (
+            await pool.query(
+              "SELECT email,password_hash FROM users WHERE id=$1",
+              [basic.id],
+            )
+          ).rows[0];
+          assert.deepEqual(creds, { email: null, password_hash: null });
+          const newCpf = String(BigInt(cpf) + 1n).padStart(11, "0");
+          await call(
+            "/api/users/" + basic.id,
+            {
+              name: "Profissional corrigido",
+              email: "",
+              cpf: newCpf,
+              role: "technician",
+            },
+            "PUT",
+          );
+          const selected = (await call("/api/catalog/technicians")).items.find(
+            (i: any) => i.id === tid,
+          );
+          assert.equal(selected.data.userId, basic.id);
+          assert.equal(selected.identifier, newCpf);
+          assert.equal(selected.name, "Profissional corrigido");
+          await call(
+            "/api/users/" + basic.id,
+            {
+              name: selected.name,
+              email: "basic-" + tag + "@example.test",
+              cpf: newCpf,
+              role: "technician",
+            },
+            "PUT",
+            422,
+          );
+          await call(
+            "/api/users/" + basic.id,
+            {
+              name: selected.name,
+              email: "basic-" + tag + "@example.test",
+              password,
+              cpf: newCpf,
+              role: "technician",
+            },
+            "PUT",
+          );
+          await call("/api/auth/login", {
+            email: "basic-" + tag + "@example.test",
+            password,
+          });
+          const current = (await call("/api/catalog/technicians")).items.find(
+            (i: any) => i.id === tid,
+          );
+          await call(
+            "/api/catalog/technicians/" + tid,
+            { baseVersion: current.version },
+            "DELETE",
+          );
+          assert.equal(
+            (await call("/api/users")).users.find((u: any) => u.id === basic.id)
+              .active,
+            false,
+          );
+          assert.ok(
+            !(await call("/api/catalog/technicians")).items.some(
+              (i: any) => i.id === tid,
+            ),
+          );
+          await call(
+            "/api/auth/login",
+            { email: "basic-" + tag + "@example.test", password },
+            "POST",
+            401,
+          );
+        },
+      );
       const partId = crypto.randomUUID();
       const equipment = (await call("/api/catalog/equipment")).items.find(
         (item: any) => item.id === eqId,
@@ -546,7 +722,170 @@ test(
           baseVersion: 0,
           mutationId: crypto.randomUUID(),
         };
+      await scenario(
+        "equipe só de auxiliares persiste e clientes antigos não promovem o primeiro",
+        async () => {
+          const url = "/api/reports/" + crypto.randomUUID();
+          const payload = {
+            ...structuredClone(p),
+            primaryTechnicianRole: "auxiliary",
+            additionalTechnicians: p.additionalTechnicians!.map((person) => ({
+              ...person,
+              role: "auxiliary",
+            })),
+          };
+          let saved = (
+            await call(
+              url,
+              {
+                ...input,
+                number: "AUX-" + tag,
+                payload,
+                mutationId: crypto.randomUUID(),
+              },
+              "PUT",
+            )
+          ).item;
+          assert.equal(saved.payload.primaryTechnicianRole, "auxiliary");
+          assert.ok(
+            saved.payload.teamSnapshot.every(
+              (person: any) => person.role === "auxiliary",
+            ),
+          );
+          const legacyPayload = {
+            ...payload,
+            primaryTechnicianRole: undefined,
+          };
+          saved = (
+            await call(
+              url,
+              {
+                ...input,
+                number: saved.number,
+                payload: legacyPayload,
+                baseVersion: saved.version,
+                mutationId: crypto.randomUUID(),
+              },
+              "PUT",
+            )
+          ).item;
+          assert.equal(saved.payload.primaryTechnicianRole, "auxiliary");
+          await pool.query("DELETE FROM service_orders WHERE id=$1", [
+            saved.id,
+          ]);
+        },
+      );
+      await scenario(
+        "API rejeita horários e KM regressivos, inclusive entre tipos de período",
+        async () => {
+          for (const field of [
+            "start",
+            "odometerStart",
+            "odometerEnd",
+          ] as const) {
+            const payload = structuredClone(p);
+            const periods = payload.days[1].periods!;
+            if (field === "start") periods[1].start = "16:59";
+            else {
+              periods[2].odometerStart = "0";
+              periods[2].odometerEnd = "100";
+              periods[3][field] = "5";
+            }
+            await call(
+              "/api/reports/" + crypto.randomUUID(),
+              {
+                ...input,
+                number: crypto.randomUUID(),
+                status: "draft",
+                payload,
+                mutationId: crypto.randomUUID(),
+              },
+              "PUT",
+              422,
+            );
+          }
+        },
+      );
       const first = await call("/api/reports/" + id, input, "PUT");
+      await scenario(
+        "relatório e inspeção rejeitam virada de dia e persistem a divisão em duas datas",
+        async () => {
+          for (const kind of ["reports", "inspections"] as const) {
+            const recordId = crypto.randomUUID();
+            const period = {
+              id: "work",
+              kind: "work" as const,
+              start: "03:30",
+              end: "01:00",
+              pauseMinutes: "",
+              odometerStart: "N/A",
+              odometerEnd: "N/A",
+            };
+            const schedule = {
+              ...newDay("first"),
+              date: "2026-11-17",
+              periods: [period],
+            };
+            const payload =
+              kind === "reports"
+                ? { ...newReport(), formRevision: 2, days: [schedule] }
+                : {
+                    formRevision: 2,
+                    documentFields: {},
+                    documentImages: {},
+                    sections: createTemplateSections(),
+                    days: [schedule],
+                  };
+            const body = {
+              ...input,
+              number: "SAME-DAY-" + recordId,
+              status: "draft",
+              payload,
+              mutationId: crypto.randomUUID(),
+            };
+            const rejected = await call(
+              "/api/" + kind + "/" + recordId,
+              body,
+              "PUT",
+              422,
+            );
+            assert.match(JSON.stringify(rejected), /23:59/);
+            assert.equal(
+              (
+                await pool.query(
+                  "SELECT count(*)::int n FROM " +
+                    (kind === "reports" ? "service_orders" : "inspections") +
+                    " WHERE id=$1",
+                  [recordId],
+                )
+              ).rows[0].n,
+              0,
+            );
+            period.end = "23:59";
+            payload.days.push({
+              ...newDay("second"),
+              date: "2026-11-18",
+              periods: [{ ...period, start: "00:00", end: "01:00" }],
+            });
+            const saved = (
+              await call(
+                "/api/" + kind + "/" + recordId,
+                { ...body, mutationId: crypto.randomUUID() },
+                "PUT",
+              )
+            ).item;
+            assert.equal(saved.payload.days.length, 2);
+            assert.equal(dayTotals(saved.payload.days[0]).work, 1229);
+            assert.equal(dayTotals(saved.payload.days[1]).work, 60);
+            await pool.query(
+              "DELETE FROM " +
+                (kind === "reports" ? "service_orders" : "inspections") +
+                " WHERE id=$1",
+              [recordId],
+            );
+          }
+        },
+      );
       const rentalId = crypto.randomUUID(),
         vehicleId = crypto.randomUUID();
       const uploadSignature = async (
@@ -1192,6 +1531,15 @@ test(
           const missingKm = structuredClone(body);
           missingKm.payload.days[0].periods[0].odometerStart = "";
           await call(url, missingKm, "PUT", 422);
+          const backwardsTime = structuredClone(body);
+          backwardsTime.payload.days[0].periods[1].start = "07:59";
+          await call(url, backwardsTime, "PUT", 422);
+          const backwardsKm = structuredClone(body);
+          Object.assign(backwardsKm.payload.days[0].periods[1], {
+            odometerStart: "5",
+            odometerEnd: "6",
+          });
+          await call(url, backwardsKm, "PUT", 422);
           const saved = (await call(url, body, "PUT")).item;
           const reloaded = (await call(url)).item;
           assert.deepEqual(reloaded, saved);
@@ -1450,7 +1798,7 @@ test(
         },
       );
       await scenario(
-        "FKs impedem entidade errada, equipamento de outro cliente e primeiro auxiliar",
+        "FKs impedem entidade errada e equipamento de outro cliente; primeiro auxiliar é permitido",
         async () => {
           await assert.rejects(
             () =>
@@ -1486,13 +1834,18 @@ test(
             "PUT",
             422,
           );
-          await assert.rejects(
-            () =>
-              pool.query(
-                "UPDATE service_order_team SET role='auxiliary' WHERE service_order_id=$1 AND position=0",
-                [id],
-              ),
-            { code: "23514" },
+          await pool.query(
+            "UPDATE service_order_team SET role='auxiliary' WHERE service_order_id=$1 AND position=0",
+            [id],
+          );
+          const auxiliaryReport = await call("/api/reports/" + id);
+          assert.equal(
+            auxiliaryReport.item.payload.primaryTechnicianRole,
+            "auxiliary",
+          );
+          assert.equal(
+            auxiliaryReport.item.payload.teamSnapshot[0].role,
+            "auxiliary",
           );
           await assert.rejects(
             () =>
@@ -1507,21 +1860,29 @@ test(
         },
       );
       await scenario(
-        "renomear cadastros não altera snapshots nem PDF histórico",
+        "cadastro atual é refletido por ID; histórico de peças e dados operacionais são preservados",
         async () => {
           const before = (await call("/api/reports/" + id)).item;
+          const currentCpf = doc.startsWith("7")
+            ? "8" + doc.slice(1)
+            : "7" + doc.slice(1);
+          const currentCnpj = "888" + doc;
           await call(
             "/api/catalog/clients/" + clientId,
             {
               name: "Cliente renomeado",
-              identifier: "123" + doc,
+              identifier: currentCnpj,
               baseVersion: 1,
             },
             "PUT",
           );
           await call(
             "/api/catalog/technicians/" + techId,
-            { name: "Técnico renomeado", identifier: doc, baseVersion: 1 },
+            {
+              name: "Técnico renomeado",
+              identifier: currentCpf,
+              baseVersion: 1,
+            },
             "PUT",
           );
           await call(
@@ -1534,7 +1895,17 @@ test(
             "PUT",
           );
           const after = (await call("/api/reports/" + id)).item;
-          assert.deepEqual(after, before);
+          assert.equal(after.clientName, "Cliente renomeado");
+          assert.equal(after.payload.clientSnapshot.identifier, currentCnpj);
+          assert.equal(after.payload.teamSnapshot[0].identifier, currentCpf);
+          assert.equal(
+            (await call("/api/inspections/" + inspectionId)).item.payload
+              .technicianSnapshot.identifier,
+            currentCpf,
+          );
+          assert.equal(after.payload.teamSnapshot[0].name, "Técnico renomeado");
+          assert.deepEqual(after.payload.parts, before.payload.parts);
+          assert.deepEqual(after.payload.days, before.payload.days);
           const saved = await call(
             "/api/reports/" + id,
             {
@@ -1544,10 +1915,10 @@ test(
             },
             "PUT",
           );
-          assert.equal(saved.item.clientName, before.clientName);
+          assert.equal(saved.item.clientName, "Cliente renomeado");
           assert.deepEqual(
             saved.item.payload.teamSnapshot,
-            before.payload.teamSnapshot,
+            after.payload.teamSnapshot,
           );
           assert.deepEqual(saved.item.payload.parts, before.payload.parts);
           assert.equal(saved.item.finalizedAt, before.finalizedAt);

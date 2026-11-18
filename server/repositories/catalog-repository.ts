@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import type { Catalog, CatalogKind } from "../../contracts/domain.js";
 import {
   canonicalDocument,
@@ -31,10 +32,11 @@ export async function catalogItems(
 ): Promise<Catalog[]> {
   const rows = (
     await db.query(
-      `SELECT c.*${kind === "vehicles" ? ", rental.name AS rental_company_name" : ""}
+      `SELECT c.*${kind === "technicians" ? ",u.name AS name,u.active AND u.role IN ('technician','technician_admin') AS active" : ""}${kind === "vehicles" ? ", rental.name AS rental_company_name" : ""}
        FROM ${catalogTables[kind]} c
+       ${kind === "technicians" ? "JOIN users u ON u.id=c.user_id" : ""}
        ${kind === "vehicles" ? "LEFT JOIN rental_companies rental ON rental.id=c.rental_company_id" : ""}
-       WHERE ($1::text IS NULL OR c.id=$1) AND (NOT $2::boolean OR c.active)
+       WHERE ($1::text IS NULL OR c.id=$1) AND (NOT $2::boolean OR (c.active ${kind === "technicians" ? "AND u.active AND u.role IN ('technician','technician_admin')" : ""}))
        ORDER BY c.${kind === "vehicles" ? "plate" : "name"}`,
       [options.id, !!options.activeOnly],
     )
@@ -127,6 +129,8 @@ export async function saveCatalog(
   await db.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
     kind + ":" + id,
   ]);
+  if (kind === "technicians")
+    await db.query("SELECT pg_advisory_xact_lock(917427)");
   const before = (await catalogItems(db, kind, { id }))[0];
   if ((before?.version || 0) !== input.baseVersion)
     throw fail(409, "Cadastro alterado. Recarregue antes de editar.");
@@ -142,7 +146,7 @@ export async function saveCatalog(
     throw fail(422, "Informe o nome.");
   if (kind === "clients") data.cnpj = identifier;
   if (kind === "technicians") {
-    const linkedUser = before?.data.userId || null;
+    let linkedUser = before?.data.userId || null;
     if (input.data?.userId && input.data.userId !== linkedUser)
       throw fail(422, "Vincule o cadastro técnico pela tela de usuários.");
     if (linkedUser) {
@@ -154,6 +158,14 @@ export async function saveCatalog(
       if (!user?.active || !isTechnician(user.role))
         throw fail(422, "O usuário vinculado não possui perfil técnico ativo.");
     }
+    if (!linkedUser) {
+      linkedUser = crypto.randomUUID();
+      await insertBasicUser(db, linkedUser, input.name);
+    } else
+      await db.query("UPDATE users SET name=$2 WHERE id=$1", [
+        linkedUser,
+        input.name,
+      ]);
     data.cpf = identifier;
     data.user_id = linkedUser;
   }
@@ -241,6 +253,12 @@ export async function saveCatalog(
   await audit(db, userId, kind, id, "save", before, saved);
   return saved;
 }
+async function insertBasicUser(db: DB, id: string, name: string) {
+  await db.query(
+    "INSERT INTO users(id,name,role,email,password_hash) VALUES($1,$2,'technician',NULL,NULL)",
+    [id, name],
+  );
+}
 export async function archiveCatalog(
   db: DB,
   kind: CatalogKind,
@@ -251,12 +269,52 @@ export async function archiveCatalog(
   await db.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
     kind + ":" + id,
   ]);
+  if (kind === "technicians")
+    await db.query("SELECT pg_advisory_xact_lock(917427)");
   const before = (await catalogItems(db, kind, { id }))[0];
   if (!before) throw fail(404, "Cadastro não encontrado.");
   if (before.version !== version)
     throw fail(409, "Cadastro alterado. Recarregue.");
-  await db.query(
-    `UPDATE ${catalogTables[kind]} SET active=false,version=version+1,updated_at=now() WHERE id=$1`,
+  if (kind === "technicians" && before.data.userId) {
+    if (before.data.userId === userId)
+      throw fail(409, "Não é possível desativar a própria conta.");
+    const account = (
+      await db.query("SELECT role,email FROM users WHERE id=$1", [
+        before.data.userId,
+      ])
+    ).rows[0];
+    if (
+      account?.email &&
+      !(
+        await db.query(
+          "SELECT 1 FROM users WHERE id=$1 AND active AND role IN ('admin','technician_admin')",
+          [userId],
+        )
+      ).rowCount
+    )
+      throw fail(
+        403,
+        "Somente administradores podem desativar usuários com acesso ao sistema.",
+      );
+    if (
+      account?.role !== "technician" &&
+      !(
+        await db.query(
+          "SELECT 1 FROM users WHERE active AND role IN ('admin','technician_admin') AND id<>$1",
+          [before.data.userId],
+        )
+      ).rowCount
+    )
+      throw fail(409, "Não é possível desativar o último administrador.");
+    await db.query("UPDATE users SET active=false WHERE id=$1", [
+      before.data.userId,
+    ]);
+    await db.query("DELETE FROM sessions WHERE user_id=$1", [
+      before.data.userId,
+    ]);
+  }
+  const archived = await db.query(
+    `UPDATE ${catalogTables[kind]} SET active=false,version=version+1,updated_at=now() WHERE id=$1 RETURNING version`,
     [id],
   );
   await audit(db, userId, kind, id, "archive", before, {
@@ -264,5 +322,5 @@ export async function archiveCatalog(
     active: false,
     version: version + 1,
   });
-  return { ok: true, version: version + 1 };
+  return { ok: true, version: archived.rows[0].version as number };
 }

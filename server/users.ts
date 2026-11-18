@@ -49,7 +49,10 @@ export const userRegistrationSchema = fields
   .superRefine(validateRoleCpf);
 export type UserRegistration = z.infer<typeof userRegistrationSchema>;
 export const userUpdateSchema = fields
-  .extend({ password: optionalPassword })
+  .extend({
+    email: z.union([fields.shape.email, z.literal("")]),
+    password: optionalPassword,
+  })
   .superRefine(validateRoleCpf);
 export const profileUpdateSchema = fields
   .omit({ role: true })
@@ -165,16 +168,26 @@ export async function updateUserAndTechnician(
         )
           throw fail(401, "Senha atual incorreta.");
       }
+      if (
+        (!input.email && (user.email || input.password)) ||
+        (input.email && !user.password_hash && !passwordHash)
+      )
+        throw fail(422, "Para liberar acesso, informe e-mail e senha inicial.");
       const role: UserRole = options.selfService
         ? user.role
         : (input as z.infer<typeof userUpdateSchema>).role;
+      if (canAdminister(role) && !input.email)
+        throw fail(
+          422,
+          "Administradores precisam de e-mail e senha de acesso.",
+        );
       if (user.active && canAdminister(user.role) && !canAdminister(role))
         await assertAnotherAdmin(db, userId);
       await db.query(
         "UPDATE users SET email=$2,name=$3,role=$4,password_hash=COALESCE($5,password_hash) WHERE id=$1",
-        [userId, input.email, input.name, role, passwordHash],
+        [userId, input.email || null, input.name, role, passwordHash],
       );
-      if (passwordHash || user.email.toLowerCase() !== input.email) {
+      if (passwordHash || (user.email || "").toLowerCase() !== input.email) {
         if (options.currentSessionHash && options.actorUserId === userId)
           await db.query(
             "DELETE FROM sessions WHERE user_id=$1 AND token_hash<>$2",

@@ -120,6 +120,7 @@ const scheduleDay = z.object({
 export const reportSchema = z.object({
   formRevision: z.literal(2).optional(),
   primaryTechnicianCharged: yesNo.optional(),
+  primaryTechnicianRole: z.enum(["technician", "auxiliary"]).optional(),
   type: z.enum(["interno", "externo", "remoto"]),
   operator: text,
   requester: text,

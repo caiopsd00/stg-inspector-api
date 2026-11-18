@@ -21,8 +21,132 @@ import {
   changeEntryClient,
   changeReportType,
   hasReportTravel,
+  periodContinuityIssues,
+  periodSummary,
+  validateSchedule,
+  type DayPeriod,
   type Entry,
 } from "../contracts/domain.js";
+test("continuidade segue ida, trabalho e volta, sem retroceder KM nem horários", () => {
+  const period = (
+    id: string,
+    kind: DayPeriod["kind"],
+    start: string,
+    end: string,
+    km1: string,
+    km2: string,
+  ): DayPeriod => ({
+    id,
+    kind,
+    start,
+    end,
+    pauseMinutes: "15",
+    odometerStart: km1,
+    odometerEnd: km2,
+  });
+  const periods = [
+    period("work", "work", "09:00", "12:00", "120", "130"),
+    period("out1", "outbound", "07:00", "08:00", "0", "100"),
+    period("out2", "outbound", "08:00", "09:00", "100", "120"),
+    period("back", "inbound", "12:00", "13:00", "130", "150"),
+  ];
+  assert.deepEqual(periodContinuityIssues(periods), []);
+  assert.equal(periodSummary(periods[0]), "2h45min líquidos · 10 km");
+  assert.equal(
+    periodSummary({
+      ...periods[0],
+      start: "09:00",
+      end: "10:00",
+      pauseMinutes: "0.5",
+      odometerStart: "100.1",
+      odometerEnd: "100.3",
+    }),
+    "0h59min 30s líquidos · 0,2 km",
+  );
+  const incomplete = structuredClone(periods);
+  incomplete[2].end = "";
+  incomplete[0].start = "07:00";
+  assert.ok(
+    periodContinuityIssues(incomplete).some(
+      (e) => e.id === "work" && e.field === "start",
+    ),
+  );
+  periods[2].odometerStart = "5";
+  periods[2].start = "07:59";
+  const errors = periodContinuityIssues(periods);
+  assert.ok(errors.some((e) => e.id === "out2" && e.field === "odometerStart"));
+  assert.ok(errors.some((e) => e.id === "out2" && e.field === "start"));
+  assert.throws(
+    () => validateSchedule([{ ...newDay("d"), periods }], false),
+    /KM|início/,
+  );
+  periods[2].odometerStart = "100";
+  periods[2].start = "08:00";
+  periods[0].odometerStart = "N/A";
+  periods[0].odometerEnd = "N/A";
+  periods[3].odometerStart = "5";
+  assert.ok(
+    periodContinuityIssues(periods).some((e) => e.id === "back"),
+    "N/A não apaga a leitura anterior",
+  );
+});
+test("ida, trabalho e volta terminam até 23:59 e continuam em outra data", () => {
+  for (const kind of ["outbound", "work", "inbound"] as const) {
+    const period: DayPeriod = {
+      id: "p",
+      kind,
+      start: "03:30",
+      end: "01:00",
+      pauseMinutes: "",
+    };
+    assert.ok(
+      periodContinuityIssues([period]).some(
+        (e) => e.field === "end" && /23:59/.test(e.message),
+      ),
+    );
+    assert.match(periodSummary(period), /outro dia/);
+    assert.throws(
+      () => validateSchedule([{ ...newDay("d"), periods: [period] }], false),
+      /23:59/,
+    );
+    const first = {
+      ...newDay("first"),
+      date: "2026-11-17",
+      periods: [{ ...period, end: "23:59" }],
+    };
+    const second = {
+      ...newDay("second"),
+      date: "2026-11-18",
+      periods: [{ ...period, start: "00:00", end: "01:00" }],
+    };
+    assert.doesNotThrow(() => validateSchedule([first, second], true));
+    assert.deepEqual(periodContinuityIssues(first.periods), []);
+    assert.equal(dayTotals(first)[kind === "work" ? "work" : "travel"], 1229);
+    assert.equal(dayTotals(second)[kind === "work" ? "work" : "travel"], 60);
+    assert.match(
+      periodSummary({ ...period, start: "00:00", end: "23:59" }),
+      /^23h59min/,
+    );
+    assert.match(
+      periodSummary({ ...period, end: "24:00" }),
+      /Horário inválido/,
+    );
+  }
+});
+test("equipe pode ser inteiramente de auxiliares, inclusive o primeiro contato", () => {
+  const e = { technicianId: null, payload: newReport() };
+  const next = withReportTeam(e as Entry, [
+    { technicianId: "a", role: "auxiliary" },
+    { technicianId: "b", role: "auxiliary" },
+  ]);
+  assert.equal(next.technicianId, "a");
+  assert.equal(next.payload.primaryTechnicianRole, "auxiliary");
+  assert.deepEqual(
+    reportTeam(next).map((m) => m.role),
+    ["auxiliary", "auxiliary"],
+  );
+  assert.doesNotThrow(() => validateReportTeam(next));
+});
 test("mesmo carro compartilha ida, volta, pausas e KM, mas não horários de trabalho", () => {
   const d = newDay("shared-car");
   d.participants = [
@@ -236,8 +360,8 @@ test("retirar referência preserva horários dependentes; rejeita ciclos e pesso
         {
           id: "p",
           kind: "work",
-          start: "22:00",
-          end: "02:00",
+          start: "08:00",
+          end: "12:00",
           pauseMinutes: "30",
         },
       ],
@@ -322,7 +446,7 @@ test("interno remove deslocamentos individuais; observações e ausências sobre
     km: 0,
   });
 });
-test("múltiplos períodos descontam somente sua própria pausa, inclusive virada de dia", () => {
+test("múltiplos períodos descontam somente sua própria pausa dentro do mesmo dia", () => {
   const day = newDay("multi");
   day.periods = [
     {
@@ -349,24 +473,24 @@ test("múltiplos períodos descontam somente sua própria pausa, inclusive virad
     {
       id: "w2",
       kind: "work",
-      start: "22:00",
-      end: "02:00",
+      start: "17:00",
+      end: "18:00",
       pauseMinutes: "15",
     },
     {
       id: "r1",
       kind: "inbound",
-      start: "03:00",
-      end: "04:00",
+      start: "18:00",
+      end: "19:00",
       pauseMinutes: "5",
     },
   ];
-  assert.deepEqual(dayTotals(day), { work: 705, travel: 135, km: 0 });
+  assert.deepEqual(dayTotals(day), { work: 525, travel: 135, km: 0 });
   const r = newReport();
   r.days = [day];
   const internal = changeReportType(r, "interno");
   assert.equal(dayPeriods(internal.days[0]).length, 2);
-  assert.equal(dayTotals(internal.days[0]).work, 705);
+  assert.equal(dayTotals(internal.days[0]).work, 525);
   day.periods[0].pauseMinutes = "61";
   assert.throws(() => dayTotals(day), /pausa/);
   day.periods[0].pauseMinutes = "-1";
@@ -446,7 +570,7 @@ test("leituras inferior e superior são vinculadas ao dia, inclusive N/A e zero"
   day.hourmeterUpper = "abc";
   assert.throws(() => dayTotals(day), /Leituras/);
 });
-test("equipe antiga é preservada e o primeiro profissional é sempre técnico", () => {
+test("equipe antiga é preservada e auxiliares mantêm sua função ao virar primeiro profissional", () => {
   const entry = {
     technicianId: "principal",
     payload: { ...newReport(), auxiliaries: ["aux", "principal", "aux"] },
@@ -458,7 +582,7 @@ test("equipe antiga é preservada e o primeiro profissional é sempre técnico",
   const promoted = withReportTeam(entry, reportTeam(entry).slice(1));
   assert.equal(promoted.technicianId, "aux");
   assert.deepEqual(reportTeam(promoted), [
-    { technicianId: "aux", role: "technician" },
+    { technicianId: "aux", role: "auxiliary" },
   ]);
   assert.deepEqual(promoted.payload.auxiliaries, []);
 });
@@ -501,12 +625,14 @@ test("equipe rejeita profissional repetido e linha adicional não preenchida", (
     validateReportTeam({ technicianId: null, payload: newReport() }),
   );
 });
-test("pausa desconta somente o período selecionado; horários atravessam meia-noite", () => {
+test("horário legado também exige divisão por dia e pausa no período selecionado", () => {
   const d = newDay("day");
   d.work = { start: "22:00", end: "02:00" };
   d.outbound = { start: "20:00", end: "21:00" };
   d.pause = { period: "outbound", minutes: "15" };
-  assert.deepEqual(dayTotals(d), { work: 240, travel: 45, km: 0 });
+  assert.throws(() => dayTotals(d), /outro dia/);
+  d.work.end = "23:59";
+  assert.deepEqual(dayTotals(d), { work: 119, travel: 45, km: 0 });
   d.pause.minutes = "61";
   assert.throws(() => dayTotals(d), /pausa/);
 });

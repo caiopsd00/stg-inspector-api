@@ -50,7 +50,7 @@ export async function recordRows(
     ? "LEFT JOIN service_order_team primary_team ON primary_team.service_order_id=r.id AND primary_team.position=0"
     : "";
   const techId = isReport ? "primary_team.technician_id" : "r.technician_id",
-    techName = isReport ? "primary_team.technician_name" : "r.technician_name";
+    techName = "professional.name";
   const teamFilter = isReport
     ? "EXISTS (SELECT 1 FROM service_order_team tm WHERE tm.service_order_id=r.id AND tm.technician_id=$5)"
     : "r.technician_id=$5";
@@ -58,14 +58,22 @@ export async function recordRows(
     ? "EXISTS (SELECT 1 FROM service_order_team own_team WHERE own_team.service_order_id=r.id AND own_team.technician_id=$8)"
     : "r.technician_id=$8";
   const teamSearch = isReport
-    ? "OR EXISTS (SELECT 1 FROM service_order_team tm WHERE tm.service_order_id=r.id AND tm.technician_name ILIKE '%'||$7||'%')"
+    ? "OR EXISTS (SELECT 1 FROM service_order_team tm WHERE tm.service_order_id=r.id AND (SELECT u.name FROM technicians t JOIN users u ON u.id=t.user_id WHERE t.id=tm.technician_id) ILIKE '%'||$7||'%')"
     : "";
   const rows = (
     await db.query(
-      `SELECT r.*,${techId} primary_technician_id,${techName} primary_technician_name FROM ${table} r ${techJoin}
+      `SELECT r.*,client.name AS client_name,client.cnpj AS client_cnpj,
+        professional.name AS technician_name,technician.cpf AS technician_cpf,
+        ${isReport ? "" : "COALESCE(professional.name,r.performed_by) AS performed_by,COALESCE(professional.name,r.examiner) AS examiner,COALESCE(approver.name,r.approved_by) AS approved_by,"}
+        ${techId} primary_technician_id,${techName} primary_technician_name
+        FROM ${table} r ${techJoin}
+        LEFT JOIN clients client ON client.id=r.client_id
+        LEFT JOIN technicians technician ON technician.id=${techId}
+        LEFT JOIN users professional ON professional.id=technician.user_id
+        ${isReport ? "" : "LEFT JOIN technicians approved ON approved.id=r.approved_by_technician_id LEFT JOIN users approver ON approver.id=approved.user_id"}
     WHERE ($1::text IS NULL OR r.id=$1) AND ($2::date IS NULL OR r.date>=$2) AND ($3::date IS NULL OR r.date<=$3)
     AND ($4::text IS NULL OR r.client_id=$4) AND ($5::text IS NULL OR ${teamFilter}) AND ($6::text IS NULL OR r.status=$6)
-    AND ($7::text IS NULL OR r.number ILIKE '%'||$7||'%' OR r.client_name ILIKE '%'||$7||'%' OR ($9::boolean AND (${techName} ILIKE '%'||$7||'%' ${teamSearch})))
+    AND ($7::text IS NULL OR r.number ILIKE '%'||$7||'%' OR client.name ILIKE '%'||$7||'%' OR ($9::boolean AND (${techName} ILIKE '%'||$7||'%' ${teamSearch})))
     AND ($8::text IS NULL OR ${ownFilter}) ORDER BY r.updated_at DESC`,
       [
         filter.id,
@@ -106,7 +114,7 @@ export async function recordRows(
     const files = name.endsWith("_files");
     children[name] = (
       await db.query(
-        `SELECT c.*${files ? ",f.width,f.height,sc.signer_name" : ""} FROM ${name} c ${files ? "JOIN files f ON f.id=c.file_id LEFT JOIN signature_captures sc ON sc.id=c.capture_id" : ""} WHERE c.${isReport ? "service_order_id" : "inspection_id"}=ANY($1::text[]) ORDER BY ${files ? "c.position,c.id" : name === "inspection_items" ? "c.section_position,c.position" : "c.position"}`,
+        `SELECT c.*${name === "service_order_team" ? ",u.name AS technician_name,t.cpf AS technician_cpf" : ""}${files ? ",f.width,f.height,sc.signer_name" : ""} FROM ${name} c ${name === "service_order_team" ? "JOIN technicians t ON t.id=c.technician_id JOIN users u ON u.id=t.user_id" : ""} ${files ? "JOIN files f ON f.id=c.file_id LEFT JOIN signature_captures sc ON sc.id=c.capture_id" : ""} WHERE c.${isReport ? "service_order_id" : "inspection_id"}=ANY($1::text[]) ORDER BY ${files ? "c.position,c.id" : name === "inspection_items" ? "c.section_position,c.position" : "c.position"}`,
         [ids],
       )
     ).rows;

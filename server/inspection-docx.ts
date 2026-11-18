@@ -20,6 +20,7 @@ import {
   hasDayData,
   hasPeriodData,
   periodLabels,
+  periodSummary,
   signatureDateTime,
 } from "../contracts/domain.js";
 const DOCUMENT_XML_PATH = "word/document.xml";
@@ -682,7 +683,7 @@ function scheduleSectionXml(inspection: Inspection) {
             .map((period, i) =>
               documentParagraph(
                 `${periodLabels[kind]} ${i + 1}: ${period.start || "—"} às ${period.end || "—"}` +
-                  ` · Pausa: ${period.pauseMinutes || "0"} min` +
+                  ` · Pausa: ${period.pauseMinutes || "0"} min · Total do item: ${periodSummary(period)}` +
                   ` · Quilometragem inicial: ${period.odometerStart || "—"} · Quilometragem final: ${period.odometerEnd || "—"}`,
               ),
             ),

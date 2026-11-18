@@ -60,6 +60,15 @@ export async function prepareRecordSave(
   ]);
   const before = (await readCurrent(db, { id }))[0];
   const p = input.payload;
+  // Older clients do not send this field; never silently promote an auxiliary.
+  if (
+    kind === "reports" &&
+    before &&
+    p.primaryTechnicianRole === undefined &&
+    before?.technicianId === input.technicianId
+  )
+    p.primaryTechnicianRole =
+      before.payload.primaryTechnicianRole || "technician";
   if ((before?.version || 0) !== input.baseVersion)
     throw fail(
       409,

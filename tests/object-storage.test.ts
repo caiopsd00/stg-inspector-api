@@ -418,7 +418,35 @@ function pdfTextOperators(pdf: Buffer) {
   return pdfTextPages(pdf).flat();
 }
 
-test("PDF técnico mantém seções consecutivas de A a G, com peças em D", async () => {
+test("PDF identifica corretamente uma equipe só de auxiliares", async () => {
+  const entry = reportEntry(randomUUID());
+  entry.payload.reasons = [];
+  entry.payload.primaryTechnicianRole = "auxiliary";
+  entry.payload.teamSnapshot = [
+    {
+      technicianId: "a",
+      name: "AUXILIAR UM",
+      role: "auxiliary",
+      charged: "Sim",
+    },
+    {
+      technicianId: "b",
+      name: "AUXILIAR DOIS",
+      role: "auxiliary",
+      charged: "Não",
+    },
+  ];
+  const text = pdfTextOperators(
+    await createReportPdf(entry, fakeCloud().storage),
+  ).join(" ");
+  assert.match(text, /ASSINATURA DO AUXILIAR/);
+  assert.match(text, /AUXILIAR UM/);
+  assert.match(text, /AUXILIAR DOIS/);
+  assert.match(text, /COBRADO/);
+  assert.doesNotMatch(text, /Técnico responsável|ASSINATURA DO TÉCNICO/);
+});
+
+test("PDF técnico mantém seções consecutivas de A a F, com peças em D", async () => {
   const entry = reportEntry(randomUUID());
   entry.payload.reasons = [];
   const pdf = await createReportPdf(entry, fakeCloud().storage);
@@ -426,9 +454,8 @@ test("PDF técnico mantém seções consecutivas de A a G, com peças em D", asy
   const titles = [
     "IDENTIFICAÇÃO",
     "EQUIPAMENTO",
-    "MOTIVOS E SERVIÇOS",
+    "DESCRIÇÃO DO SERVIÇO",
     "PEÇAS UTILIZADAS / SOLICITADAS",
-    "PENDÊNCIAS / PRÓXIMOS PASSOS",
     "CRONOGRAMA DE ATENDIMENTO",
     "STATUS FINAL",
   ];
@@ -444,6 +471,113 @@ test("PDF técnico mantém seções consecutivas de A a G, com peças em D", asy
       recursive: true,
     });
     await fs.writeFile(process.env.RENDER_REPORT_PDF, pdf);
+  }
+});
+
+test("cronograma no PDF apresenta horário/pausa, KM inicial/final e totais nomeados por último", async () => {
+  const entry = reportEntry(randomUUID());
+  entry.payload.reasons = [];
+  entry.payload.formRevision = 2;
+  entry.payload.days = [
+    {
+      ...newDay("schedule-order"),
+      date: "2026-11-17",
+      periods: [
+        {
+          id: "i1",
+          kind: "outbound",
+          start: "00:00",
+          end: "02:00",
+          pauseMinutes: "100",
+          odometerStart: "0",
+          odometerEnd: "100",
+        },
+        {
+          id: "i2",
+          kind: "outbound",
+          start: "02:00",
+          end: "03:00",
+          pauseMinutes: "0",
+          odometerStart: "100",
+          odometerEnd: "130",
+        },
+        {
+          id: "t1",
+          kind: "work",
+          start: "03:00",
+          end: "06:00",
+          pauseMinutes: "15",
+          odometerStart: "130",
+          odometerEnd: "130",
+        },
+        {
+          id: "t2",
+          kind: "work",
+          start: "06:00",
+          end: "07:00",
+          pauseMinutes: "15",
+          odometerStart: "N/A",
+          odometerEnd: "N/A",
+        },
+        {
+          id: "v1",
+          kind: "inbound",
+          start: "07:00",
+          end: "08:00",
+          pauseMinutes: "0",
+          odometerStart: "130",
+          odometerEnd: "160",
+        },
+        {
+          id: "v2",
+          kind: "inbound",
+          start: "08:00",
+          end: "09:00",
+          pauseMinutes: "0",
+          odometerStart: "160",
+          odometerEnd: "180",
+        },
+      ],
+    },
+  ];
+  const pdf = await createReportPdf(entry, fakeCloud().storage);
+  const pages = pdfTextPages(pdf);
+  const text = pages.flat();
+  const first = text.indexOf("DESLOCAMENTO DE IDA 1");
+  assert.deepEqual(text.slice(first, first + 10), [
+    "DESLOCAMENTO DE IDA 1",
+    "00:00 às 02:00",
+    "PAUSA",
+    "100 min",
+    "KM INICIAL",
+    "0",
+    "KM FINAL",
+    "100",
+    "TOTAIS IDA 1",
+    "0h20min líquidos · 100 km",
+  ]);
+  for (const [title, kind] of [
+    ["DESLOCAMENTO DE IDA", "IDA"],
+    ["TRABALHO", "TRABALHO"],
+    ["DESLOCAMENTO DE VOLTA", "VOLTA"],
+  ]) {
+    for (const number of [1, 2]) {
+      const label = title + " " + number;
+      const page = pages.find((items) => items.includes(label));
+      assert.ok(page, label);
+      const start = page.indexOf(label);
+      const block = page.slice(start, start + 10);
+      assert.equal(block[4], "KM INICIAL");
+      assert.equal(block[6], "KM FINAL");
+      assert.equal(block[8], "TOTAIS " + kind + " " + number);
+    }
+  }
+  assert.ok(!text.includes("TOTAIS DO ITEM"));
+  if (process.env.RENDER_PERIODS_PDF) {
+    await fs.mkdir(path.dirname(process.env.RENDER_PERIODS_PDF), {
+      recursive: true,
+    });
+    await fs.writeFile(process.env.RENDER_PERIODS_PDF, pdf);
   }
 });
 
@@ -688,9 +822,8 @@ test("PDF técnico preserva fotos, equipe e textos extensos com um cabeçalho e 
     const headers = [
       "IDENTIFICAÇÃO",
       "EQUIPAMENTO",
-      "MOTIVOS E SERVIÇOS",
+      "DESCRIÇÃO DO SERVIÇO",
       "PEÇAS UTILIZADAS / SOLICITADAS",
-      "PENDÊNCIAS / PRÓXIMOS PASSOS",
       "CRONOGRAMA DE ATENDIMENTO",
       "STATUS FINAL",
     ];
@@ -702,6 +835,18 @@ test("PDF técnico preserva fotos, equipe e textos extensos com um cabeçalho e 
         "Título isolado no fim da página",
       );
     }
+    const combined = text.join(" ");
+    assert.match(combined, /COBRADO/);
+    assert.doesNotMatch(
+      combined,
+      /Serviço cobrado|KM atribuído|PENDÊNCIAS \/ PRÓXIMOS PASSOS/,
+    );
+    assert.match(combined, /Tipo de aplicação: Substituição/);
+    assert.match(combined, /Tipo de aplicação: Solicitação/);
+    assert.match(combined, /TOTAIS IDA 1/);
+    assert.match(combined, /TOTAIS TRABALHO 1/);
+    assert.match(combined, /TOTAIS VOLTA 1/);
+    assert.match(combined, /1h00min líquidos/);
     const normalized = text.filter(isBodyLine).join("").replace(/\s+/g, "");
     for (const phrase of [
       record.payload.reasons[0].description,

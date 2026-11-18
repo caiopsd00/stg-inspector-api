@@ -325,6 +325,8 @@ test("inspeção inclui identificação, totais, fotos complementares e assinatu
       assert.match(resultRows[index], /w:hRule="atLeast"/);
     }
     assert.equal(xml.split("Inspeção realizada por:").length - 1, 1);
+    assert.ok(xml.includes("Total do item: 3h45min líquidos · N/A km"));
+    assert.ok(xml.includes("Total do item: 1h00min líquidos · 5 km"));
     assert.ok(xml.indexOf(resultTable) < technicianLabel);
     const checklistTables = tables.filter((table) =>
       table.includes('<w:tblW w:w="9465"'),

@@ -52,6 +52,7 @@ export async function readServiceOrders(
     const payload = {
       ...(r.form_revision === 2 ? { formRevision: 2 } : {}),
       primaryTechnicianCharged: yesNo(team[0]?.charged),
+      primaryTechnicianRole: team[0]?.role || "technician",
       vehicleSnapshot: vehicleSnap(r),
       type: r.type,
       operator: r.operator,
@@ -61,13 +62,11 @@ export async function readServiceOrders(
       auxiliaries: team
         .filter((t) => t.role === "auxiliary")
         .map((t) => t.technician_id),
-      additionalTechnicians: team
-        .slice(1)
-        .map((t) => ({
-          technicianId: t.technician_id,
-          role: t.role,
-          ...(t.charged == null ? {} : { charged: yesNo(t.charged) }),
-        })),
+      additionalTechnicians: team.slice(1).map((t) => ({
+        technicianId: t.technician_id,
+        role: t.role,
+        ...(t.charged == null ? {} : { charged: yesNo(t.charged) }),
+      })),
       teamSnapshot: team.map((t) => ({
         technicianId: t.technician_id,
         role: t.role,

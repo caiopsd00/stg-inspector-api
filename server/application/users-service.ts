@@ -24,7 +24,8 @@ export async function listUsers() {
   return rows.map((row) => ({
     id: row.id,
     name: row.name,
-    email: row.email,
+    email: row.email || "",
+    hasAccess: !!row.has_access,
     role: row.role,
     active: row.active,
     cpf: row.technician_cpf || "",

@@ -23,7 +23,11 @@ export function createAuthService() {
       if (!accounts.allow(key))
         throw fail(429, "Muitas tentativas. Aguarde 15 minutos.");
       const row = await activeUserByEmail(email);
-      if (!row || !(await verifyPassword(password, row.password_hash)))
+      if (
+        !row ||
+        !row.password_hash ||
+        !(await verifyPassword(password, row.password_hash))
+      )
         throw fail(401, "E-mail ou senha inválidos.");
       accounts.reset(key);
       const token = crypto.randomBytes(32).toString("hex");
