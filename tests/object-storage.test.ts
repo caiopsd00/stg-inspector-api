@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { inflateSync } from "node:zlib";
+import PDFDocument from "pdfkit";
 
 import type { Storage } from "@google-cloud/storage";
 import sharp from "sharp";
@@ -490,6 +491,63 @@ test("PDF preserva descrição do motivo antes do serviço, mesmo em históricos
         await fs.writeFile(process.env.RENDER_REASON_PDF, pdf);
       }
     }
+  }
+});
+
+test("numeração do motivo alinha recuo e linha de base com o conteúdo do PDF", async (t) => {
+  const spans: Array<{ text: string; x: number; y: number; size: number }> = [];
+  const original = PDFDocument.prototype.text;
+  t.mock.method(
+    PDFDocument.prototype,
+    "text",
+    function (this: any, ...args: any[]) {
+      if (
+        typeof args[0] === "string" &&
+        typeof args[1] === "number" &&
+        typeof args[2] === "number"
+      )
+        spans.push({
+          text: args[0],
+          x: args[1],
+          y: args[2],
+          size: this._fontSize,
+        });
+      return original.apply(this, args as Parameters<typeof original>);
+    },
+  );
+  const entry = reportEntry(randomUUID());
+  entry.payload.reasons[0].services[0].photos = [];
+  try {
+    await createReportPdf(entry, fakeCloud().storage);
+    const number = spans.find((span) => span.text === "01")!;
+    const description = spans.find((span) =>
+      span.text.startsWith("Descrição do motivo:"),
+    )!;
+    const service = spans.find((span) =>
+      span.text.startsWith("Serviço realizado:"),
+    )!;
+    assert.ok(number && description && service);
+    assert.equal(
+      number.x,
+      service.x,
+      "Número deve usar o mesmo recuo dos textos do bloco",
+    );
+    assert.equal(
+      number.y,
+      description.y,
+      "Número deve acompanhar a primeira linha da descrição",
+    );
+    assert.equal(
+      number.size,
+      description.size,
+      "Fontes devem ter o mesmo tamanho para alinhar a linha de base",
+    );
+    assert.ok(
+      description.x > number.x,
+      "Descrição deve preservar espaço após a numeração",
+    );
+  } finally {
+    t.mock.restoreAll();
   }
 });
 

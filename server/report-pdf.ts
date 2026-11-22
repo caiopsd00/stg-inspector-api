@@ -281,9 +281,11 @@ export async function createReportPdf(
     const y = doc.y;
     doc
       .font("Helvetica-Bold")
-      .fontSize(9)
+      .fontSize(9.5)
       .fillColor(INK)
-      .text(String(index).padStart(2, "0"), MARGIN, y, { lineBreak: false });
+      .text(String(index).padStart(2, "0"), MARGIN + 9, y, {
+        lineBreak: false,
+      });
     doc
       .font("Helvetica")
       .fontSize(9.5)
