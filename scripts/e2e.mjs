@@ -984,6 +984,23 @@ try {
   );
   await openSection("C. Descrição do serviço");
   await page.getByRole("button", { name: "+ Motivo", exact: true }).click();
+  const reasonDescription = page.getByRole("textbox", {
+    name: "Descrição do motivo",
+    exact: true,
+  });
+  await reasonDescription.fill("Falha intermitente no conjunto");
+  assert.equal(await reasonDescription.getAttribute("autocapitalize"), "none");
+  const reasonFields = await reasonDescription
+    .locator("..")
+    .locator("..")
+    .locator("textarea")
+    .evaluateAll((fields) =>
+      fields.map((field) => field.getAttribute("aria-label")),
+    );
+  assert.deepEqual(reasonFields.slice(0, 2), [
+    "Descrição do motivo",
+    "Serviço realizado",
+  ]);
   assert.equal(
     await page
       .getByRole("button", { name: "Serviço realizado", exact: true })
@@ -999,6 +1016,11 @@ try {
   await page
     .getByRole("textbox", { name: "Serviço realizado", exact: true })
     .fill("Verificação e ajuste do conjunto");
+  assert.equal(
+    await reasonDescription.inputValue(),
+    "Falha intermitente no conjunto",
+  );
+  await reasonDescription.fill("Falha intermitente no conjunto revisada");
   assert.equal(
     await page
       .getByRole("textbox", { name: "Serviço realizado", exact: true })
@@ -1052,15 +1074,29 @@ try {
   async function assertPhotoActionSpacing() {
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 1000 });
+      // Wait for responsive layout/scroll anchoring before measuring both
+      // controls in the same frame; separate round trips can see different scrolls.
+      await page.evaluate(async () => {
+        await document.fonts.ready;
+        await new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        );
+      });
       const add = await page
         .getByLabel("Adicionar fotos", { exact: true })
         .locator("..")
-        .boundingBox();
+        .elementHandle();
       const remove = await page
         .getByRole("button", { name: "Remover motivo", exact: true })
-        .boundingBox();
+        .elementHandle();
+      const gap = await page.evaluate(
+        ([add, remove]) =>
+          remove.getBoundingClientRect().top -
+          add.getBoundingClientRect().bottom,
+        [add, remove],
+      );
       assert.ok(
-        remove.y - (add.y + add.height) >= 11.5,
+        gap >= 11.5,
         "Ações de foto e remoção precisam de pelo menos 12px de separação",
       );
       assert.equal(
@@ -1874,6 +1910,7 @@ try {
   assert.ok((await reportSummary.innerText()).includes("LTM REVISADO " + tag));
   assert.ok(!(await reportSummary.innerText()).includes("Capacidade nominal"));
   for (const text of [
+    "Falha intermitente no conjunto revisada",
     "Verifique na revisão: peça e cabo sem avarias.",
     "Agendar retorno após confirmação do cliente.",
   ])
@@ -1906,6 +1943,14 @@ try {
     .getByRole("dialog", { name: "Resumo do registro" })
     .getByRole("button", { name: "Editar", exact: true })
     .click();
+  assert.equal(
+    await page.getByLabel("Descrição do motivo", { exact: true }).inputValue(),
+    "Falha intermitente no conjunto revisada",
+  );
+  assert.equal(
+    await page.getByLabel("Serviço realizado", { exact: true }).inputValue(),
+    "Verificação e ajuste do conjunto",
+  );
   assert.equal(
     await page
       .getByLabel("Peça do catálogo", { exact: true })

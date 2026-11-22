@@ -380,10 +380,10 @@ export async function createReportPdf(
 
   const reasonLeadHeight = (reason: Report["reasons"][number]) => {
     doc.font("Helvetica").fontSize(9.5);
-    const reasonHeight = doc.heightOfString(clean(reason.description), {
-      width: width - 34,
-      lineGap: 2,
-    });
+    const reasonHeight = doc.heightOfString(
+      `Descrição do motivo: ${clean(reason.description)}`,
+      { width: width - 34, lineGap: 2 },
+    );
     const firstService = reason.services[0];
     const serviceHeight = firstService
       ? doc.heightOfString(
@@ -391,7 +391,13 @@ export async function createReportPdf(
           { width: width - 18, lineGap: 2 },
         )
       : 0;
-    return Math.min(reasonHeight, 45) + Math.min(serviceHeight, 40) + 24;
+    // Reserve the first service's own minimum space too, so the restored
+    // description is not orphaned at the bottom of the preceding page.
+    return (
+      Math.min(reasonHeight, 45) +
+      10 +
+      (firstService ? Math.max(60, Math.min(serviceHeight, 80)) : 0)
+    );
   };
   section(
     "Descrição do serviço",
@@ -411,12 +417,7 @@ export async function createReportPdf(
       doc.y += 18;
     }
     ensure(reasonLeadHeight(reason));
-    listItem(
-      ri + 1,
-      reason.description === reason.services[0]?.description
-        ? `Motivo ${ri + 1}`
-        : reason.description,
-    );
+    listItem(ri + 1, `Descrição do motivo: ${clean(reason.description)}`);
     if (!reason.services.length && reason.pending?.trim())
       textBlock(`Pendências: ${reason.pending}`);
     for (const [si, service] of reason.services.entries()) {

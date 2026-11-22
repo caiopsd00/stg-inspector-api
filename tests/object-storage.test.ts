@@ -425,6 +425,74 @@ function pdfTextOperators(pdf: Buffer) {
   return pdfTextPages(pdf).flat();
 }
 
+test("PDF preserva descrição do motivo antes do serviço, mesmo em históricos com textos iguais", async () => {
+  for (const formRevision of [undefined, 2] as const) {
+    for (const description of [
+      "Falha antiga no conjunto",
+      "Reparo do conjunto",
+    ]) {
+      const entry = reportEntry(randomUUID());
+      entry.payload.formRevision = formRevision;
+      entry.payload.reasons = [
+        {
+          id: "reason",
+          description,
+          pending: "Retorno após confirmação",
+          services: [
+            {
+              id: "service",
+              description: "Reparo do conjunto",
+              notes: "Observação preservada",
+              completed: "Sim",
+              photos: [],
+            },
+          ],
+        },
+      ];
+      const before = structuredClone(entry);
+      const pdf = await createReportPdf(entry, fakeCloud().storage);
+      const text = pdfTextOperators(pdf).join(" ");
+      const reasonAt = text.indexOf(`Descrição do motivo: ${description}`);
+      const serviceAt = text.indexOf("Serviço realizado: Reparo do conjunto");
+      assert.ok(
+        reasonAt >= 0,
+        "Descrição do motivo precisa aparecer mesmo quando igual ao serviço",
+      );
+      assert.ok(
+        serviceAt > reasonAt,
+        "Motivo deve aparecer antes do serviço realizado",
+      );
+      assert.ok(
+        pdfTextPages(pdf).some((page) => {
+          const text = page.join(" ");
+          return (
+            text.includes(`Descrição do motivo: ${description}`) &&
+            text.includes("Serviço realizado: Reparo do conjunto")
+          );
+        }),
+        "Motivo curto e seu serviço não devem ficar separados pela quebra de página",
+      );
+      assert.ok(text.includes("Observações: Observação preservada"));
+      assert.ok(text.includes("Pendências: Retorno após confirmação"));
+      assert.deepEqual(
+        entry,
+        before,
+        "Gerar PDF não pode modificar dados antigos",
+      );
+      if (
+        process.env.RENDER_REASON_PDF &&
+        formRevision === 2 &&
+        description === "Falha antiga no conjunto"
+      ) {
+        await fs.mkdir(path.dirname(process.env.RENDER_REASON_PDF), {
+          recursive: true,
+        });
+        await fs.writeFile(process.env.RENDER_REASON_PDF, pdf);
+      }
+    }
+  }
+});
+
 test("PDF identifica corretamente uma equipe só de auxiliares", async () => {
   const entry = reportEntry(randomUUID());
   entry.payload.reasons = [];

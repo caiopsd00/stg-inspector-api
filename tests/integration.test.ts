@@ -806,6 +806,82 @@ test(
           }
         },
       );
+      await scenario(
+        "descrições históricas do motivo e do serviço persistem e são editadas de forma independente",
+        async () => {
+          const recordId = crypto.randomUUID();
+          const url = "/api/reports/" + recordId;
+          const payload = structuredClone(p);
+          let version = 0;
+          const save = async () => {
+            const saved = (
+              await call(
+                url,
+                {
+                  ...input,
+                  number: "MOTIVO-" + tag,
+                  status: "draft",
+                  payload,
+                  baseVersion: version,
+                  mutationId: crypto.randomUUID(),
+                },
+                "PUT",
+              )
+            ).item;
+            version = saved.version;
+            const reloaded = (await call(url)).item;
+            assert.deepEqual(reloaded.payload.reasons, saved.payload.reasons);
+            const reason = reloaded.payload.reasons[0];
+            assert.equal(reason.description, payload.reasons[0].description);
+            assert.equal(reason.pending, payload.reasons[0].pending);
+            assert.equal(
+              reason.services[0].description,
+              payload.reasons[0].services[0].description,
+            );
+            assert.equal(
+              reason.services[0].notes,
+              payload.reasons[0].services[0].notes,
+            );
+            assert.deepEqual(
+              reason.services[0].photos.map((photo: any) => photo.uri),
+              payload.reasons[0].services[0].photos.map((photo) => photo.uri),
+            );
+            const row = (
+              await pool.query(
+                "SELECT r.description AS reason,s.description AS service FROM service_order_reasons r JOIN service_order_services s ON s.service_order_id=r.service_order_id AND s.reason_id=r.id WHERE r.service_order_id=$1",
+                [recordId],
+              )
+            ).rows[0];
+            assert.equal(row.reason, payload.reasons[0].description);
+            assert.equal(
+              row.service,
+              payload.reasons[0].services[0].description,
+            );
+          };
+          try {
+            await save();
+            payload.reasons[0].description =
+              "Motivo antigo com acentuação revisado";
+            await save();
+            const reasonBefore = payload.reasons[0].description;
+            payload.reasons[0].services[0].description =
+              "Serviço revisado sem alterar motivo";
+            await save();
+            assert.equal(payload.reasons[0].description, reasonBefore);
+            // Reports filled while the inputs were merged can have equal texts.
+            payload.reasons[0].description =
+              payload.reasons[0].services[0].description;
+            await save();
+            payload.reasons[0].services[0].description =
+              "Novo serviço, motivo histórico preservado";
+            await save();
+          } finally {
+            await pool.query("DELETE FROM service_orders WHERE id=$1", [
+              recordId,
+            ]);
+          }
+        },
+      );
       const first = await call("/api/reports/" + id, input, "PUT");
       await scenario(
         "relatório e inspeção rejeitam virada de dia e persistem a divisão em duas datas",
