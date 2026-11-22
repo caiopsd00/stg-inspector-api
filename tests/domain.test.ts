@@ -23,10 +23,26 @@ import {
   hasReportTravel,
   periodContinuityIssues,
   periodSummary,
+  formatDuration,
   validateSchedule,
   type DayPeriod,
   type Entry,
 } from "../contracts/domain.js";
+test("durações usam horas e minutos sem perder segundos ou limitar totais a um dia", () => {
+  for (const [minutes, expected] of [
+    [0, "0h00min"],
+    [5, "0h05min"],
+    [60, "1h00min"],
+    [90, "1h30min"],
+    [360, "6h00min"],
+    [780, "13h00min"],
+    [1500, "25h00min"],
+    [59.5, "0h59min 30s"],
+  ] as const)
+    assert.equal(formatDuration(minutes), expected);
+  for (const invalid of [-1, NaN, Infinity])
+    assert.equal(formatDuration(invalid), "—");
+});
 test("continuidade segue ida, trabalho e volta, sem retroceder KM nem horários", () => {
   const period = (
     id: string,

@@ -572,19 +572,24 @@ export function periodContinuityIssues(periods: DayPeriod[]): Array<{
   }
   return issues;
 }
+export function formatDuration(minutes: number): string {
+  if (!Number.isFinite(minutes) || minutes < 0) return "—";
+  const seconds = Math.round(minutes * 60);
+  const hours = Math.floor(seconds / 3600),
+    remainder = Math.floor((seconds % 3600) / 60),
+    extraSeconds = seconds % 60;
+  return `${hours}h${String(remainder).padStart(2, "0")}min${extraSeconds ? " " + extraSeconds + "s" : ""}`;
+}
 export function periodSummary(p: DayPeriod): string {
   try {
-    const seconds = Math.round(periodNetMinutes(p) * 60);
-    const hours = Math.floor(seconds / 3600),
-      remainder = Math.floor((seconds % 3600) / 60),
-      extraSeconds = seconds % 60;
+    const duration = formatDuration(periodNetMinutes(p));
     const km =
       p.odometerStart === "N/A" || p.odometerEnd === "N/A"
         ? "N/A"
         : p.odometerStart && p.odometerEnd
           ? periodKm(p).toLocaleString("pt-BR", { maximumFractionDigits: 6 })
           : "—";
-    return `${hours}h${String(remainder).padStart(2, "0")}min${extraSeconds ? " " + extraSeconds + "s" : ""} líquidos · ${km} km`;
+    return `${duration} líquidos · ${km} km`;
   } catch (error) {
     return (error as Error).message;
   }

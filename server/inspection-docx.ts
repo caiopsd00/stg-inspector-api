@@ -18,6 +18,7 @@ import {
 import {
   dayPeriods,
   dayTotals,
+  formatDuration,
   hasDayData,
   hasPeriodData,
   periodLabels,
@@ -684,13 +685,13 @@ function scheduleSectionXml(inspection: Inspection) {
             .map((period, i) =>
               documentParagraph(
                 `${periodLabels[kind]} ${i + 1}: ${period.start || "—"} às ${period.end || "—"}` +
-                  ` · Pausa: ${period.pauseMinutes || "0"} min · Total do item: ${periodSummary(period)}` +
+                  ` · Pausa: ${formatDuration(Number(period.pauseMinutes || 0))} · Total do item: ${periodSummary(period)}` +
                   ` · Quilometragem inicial: ${period.odometerStart || "—"} · Quilometragem final: ${period.odometerEnd || "—"}`,
               ),
             ),
         ),
         documentParagraph(
-          `Resumo do dia: Trabalho líquido ${totals.work} min · Deslocamento líquido ${totals.travel} min · Quilometragem total ${totals.km}`,
+          `Resumo do dia: Trabalho líquido ${formatDuration(totals.work)} · Deslocamento líquido ${formatDuration(totals.travel)} · Quilometragem total ${totals.km}`,
           { bold: true },
         ),
       ];
@@ -702,7 +703,7 @@ function scheduleSectionXml(inspection: Inspection) {
             bold: true,
           }),
           documentParagraph(
-            `Trabalho líquido: ${total.work} min · Deslocamento líquido: ${total.travel} min · Quilometragem total: ${total.km}. Pausas já descontadas.`,
+            `Trabalho líquido: ${formatDuration(total.work)} · Deslocamento líquido: ${formatDuration(total.travel)} · Quilometragem total: ${total.km}. Pausas já descontadas.`,
           ),
         ]
       : []),

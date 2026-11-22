@@ -5,6 +5,7 @@ import { mediaStorageKey } from "./object-storage/index.js";
 import type { ObjectStorage } from "./object-storage/types.js";
 import {
   dayTotals,
+  formatDuration,
   participantTotals,
   participantDay,
   dayPeriods,
@@ -71,8 +72,6 @@ export async function createReportPdf(
         });
   };
   const clean = (value: unknown) => String(value ?? "").trim() || "—";
-  const minutesAsHours = (minutes: number) =>
-    `${String(Math.floor(minutes / 60)).padStart(2, "0")}:${String(minutes % 60).padStart(2, "0")}`;
   function pageHeader(first = false) {
     doc.rect(0, 0, doc.page.width, first ? 60 : 28).fill(INK);
     doc.rect(0, first ? 60 : 28, doc.page.width, 2).fill(LIME);
@@ -546,7 +545,7 @@ export async function createReportPdf(
               `${periodLabels[kind]} ${pi + 1}`,
               `${period.start || "—"} às ${period.end || "—"}`,
             ],
-            ["Pausa", `${period.pauseMinutes || "0"} min`],
+            ["Pausa", formatDuration(Number(period.pauseMinutes || 0))],
             ...(data.formRevision === 2 ||
             period.odometerStart ||
             period.odometerEnd
@@ -560,14 +559,14 @@ export async function createReportPdf(
         }
       }
       pairGrid([
-        ["Trabalho", `${ownTotals.work} min`],
-        ["Deslocamento", `${ownTotals.travel} min`],
+        ["Trabalho", formatDuration(ownTotals.work)],
+        ["Deslocamento", formatDuration(ownTotals.travel)],
       ]);
     }
     if (day.participants !== undefined) {
       const totals = dayTotals(day);
       textBlock(
-        `Total do dia (KM sem duplicidade): ${totals.km} km  •  Trabalho da equipe: ${totals.work} min  •  Deslocamento da equipe: ${totals.travel} min`,
+        `Total do dia (KM sem duplicidade): ${totals.km} km  •  Trabalho da equipe: ${formatDuration(totals.work)}  •  Deslocamento da equipe: ${formatDuration(totals.travel)}`,
         { bold: true, size: 8, color: INK },
       );
     }
@@ -583,7 +582,7 @@ export async function createReportPdf(
     },
     { work: 0, travel: 0, km: 0 },
   );
-  const summaryText = `Trabalho ${minutesAsHours(total.work)}  •  Deslocamento ${minutesAsHours(total.travel)}  •  KM ${total.km}`;
+  const summaryText = `Trabalho ${formatDuration(total.work)}  •  Deslocamento ${formatDuration(total.travel)}  •  KM ${total.km}`;
   doc.font("Helvetica").fontSize(9);
   const summaryHeight =
     24 + doc.heightOfString(summaryText, { width: width - 24, lineGap: 2 }) + 8;

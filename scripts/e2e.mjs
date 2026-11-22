@@ -1569,7 +1569,7 @@ try {
   await addPeriod("Deslocamento de volta", "Volta", 2, "20:15", "20:45");
   assert.ok(
     (await page.locator('[data-fold="E"]').innerText()).includes(
-      "525 min de trabalho · 165 min de deslocamento · 25 km",
+      "8h45min de trabalho · 2h45min de deslocamento · 25 km",
     ),
   );
   await page.screenshot({
@@ -1601,7 +1601,7 @@ try {
     .check();
   assert.ok(
     (await page.locator('[data-fold="E"]').innerText()).includes(
-      "1050 min de trabalho · 330 min de deslocamento · 25 km",
+      "17h30min de trabalho · 5h30min de deslocamento · 25 km",
     ),
   );
   await page.screenshot({
@@ -1624,7 +1624,7 @@ try {
   await secondWork.getByLabel("Fim: minuto", { exact: true }).press("Escape");
   assert.ok(
     (await page.locator('[data-fold="E"]').innerText()).includes(
-      "870 min de trabalho · 330 min de deslocamento · 25 km",
+      "14h30min de trabalho · 5h30min de deslocamento · 25 km",
     ),
   );
   await attendance
@@ -1635,7 +1635,7 @@ try {
     .uncheck();
   assert.ok(
     (await page.locator('[data-fold="E"]').innerText()).includes(
-      "345 min de trabalho · 165 min de deslocamento · 25 km",
+      "5h45min de trabalho · 2h45min de deslocamento · 25 km",
     ),
   );
   assert.equal(
@@ -1669,7 +1669,7 @@ try {
   await openSection("TÉCNICO QA " + tag);
   assert.ok(
     (await page.locator('[data-fold="E"]').innerText()).includes(
-      "525 min de trabalho · 165 min de deslocamento · 25 km",
+      "8h45min de trabalho · 2h45min de deslocamento · 25 km",
     ),
   );
   await page
@@ -1922,7 +1922,7 @@ try {
     "Deslocamento de ida 2",
     "Trabalho 2",
     "Deslocamento de volta 2",
-    "525 min de trabalho · 165 min de deslocamento · 25 km",
+    "8h45min de trabalho · 2h45min de deslocamento · 25 km",
   ])
     assert.ok((await reportSummary.innerText()).includes(label));
   assert.ok(
@@ -2074,7 +2074,7 @@ try {
     .check();
   assert.ok(
     (await page.locator('[data-fold="E"]').innerText()).includes(
-      "345 min de trabalho",
+      "5h45min de trabalho",
     ),
   );
   await page
@@ -2356,7 +2356,7 @@ try {
     assert.ok(inspectionXml.includes(value), value);
   assert.match(
     inspectionXml,
-    /Trabalho líquido: 105 min · Deslocamento líquido: 60 min · Quilometragem total: 0/,
+    /Trabalho líquido: 1h45min · Deslocamento líquido: 1h00min · Quilometragem total: 0/,
   );
   assert.doesNotMatch(inspectionXml, /\bCPF\b|GUINDASTE – Guindaste/);
   assert.ok(

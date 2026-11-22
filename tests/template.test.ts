@@ -256,11 +256,11 @@ test("inspeção inclui identificação, totais, fotos complementares e assinatu
     assert.match(xml, /FROTA-009/);
     assert.match(
       xml,
-      /Resumo do dia: Trabalho líquido 225 min · Deslocamento líquido 60 min · Quilometragem total 25/,
+      /Resumo do dia: Trabalho líquido 3h45min · Deslocamento líquido 1h00min · Quilometragem total 25/,
     );
     assert.match(
       xml,
-      /Trabalho líquido: 285 min · Deslocamento líquido: 60 min · Quilometragem total: 30/,
+      /Trabalho líquido: 4h45min · Deslocamento líquido: 1h00min · Quilometragem total: 30/,
     );
     assert.match(
       xml,

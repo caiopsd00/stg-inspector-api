@@ -681,7 +681,7 @@ test("cronograma no PDF apresenta horário/pausa, KM inicial/final e totais nome
     "DESLOCAMENTO DE IDA 1",
     "00:00 às 02:00",
     "PAUSA",
-    "100 min",
+    "1h40min",
     "KM INICIAL",
     "0",
     "KM FINAL",
@@ -706,6 +706,9 @@ test("cronograma no PDF apresenta horário/pausa, KM inicial/final e totais nome
     }
   }
   assert.ok(!text.includes("TOTAIS DO ITEM"));
+  assert.doesNotMatch(text.join(" "), /\b\d+ min\b/);
+  assert.match(text.join(" "), /Trabalho 3h30min/);
+  assert.match(text.join(" "), /Deslocamento 3h20min/);
   if (process.env.RENDER_PERIODS_PDF) {
     await fs.mkdir(path.dirname(process.env.RENDER_PERIODS_PDF), {
       recursive: true,
@@ -1001,8 +1004,8 @@ test("PDF técnico preserva fotos, equipe e textos extensos com um cabeçalho e 
       "SERIE-QA-2026",
       "PC-001",
       "PC-002",
-      "Trabalho 14:00",
-      "Deslocamento 08:00",
+      "Trabalho 14h00min",
+      "Deslocamento 8h00min",
       "KM 100",
     ])
       assert.ok(
