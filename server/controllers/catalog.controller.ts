@@ -17,10 +17,10 @@ import {
 export const catalogController = {
   async list(req: Request, res: Response) {
     const kind = catalogKinds.parse(req.params.kind);
-    res.json({ items: await listCatalogItems(kind) });
+    res.json({ items: await listCatalogItems(kind, req.user!) });
   },
   async partByCode(req: Request, res: Response) {
-    const item = await findPartByCode(String(req.params.code));
+    const item = await findPartByCode(String(req.params.code), req.user!);
     if (!item) throw fail(404, "Peça não cadastrada.");
     res.json({ item });
   },
@@ -28,12 +28,12 @@ export const catalogController = {
     const kind = catalogKinds.parse(req.params.kind);
     const id = idSchema.parse(req.params.id);
     const input = catalogInput.parse({ ...req.body, id });
-    res.json({ item: await saveCatalogItem(kind, id, input, req.user!.id) });
+    res.json({ item: await saveCatalogItem(kind, id, input, req.user!) });
   },
   async archive(req: Request, res: Response) {
     const kind = catalogKinds.parse(req.params.kind);
     const id = idSchema.parse(req.params.id);
     const input = archiveCatalogInput.parse(req.body);
-    res.json(await archiveCatalogItem(kind, id, input, req.user!.id));
+    res.json(await archiveCatalogItem(kind, id, input, req.user!));
   },
 };

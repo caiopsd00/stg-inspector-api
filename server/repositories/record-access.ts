@@ -1,9 +1,5 @@
 import type { User } from "../auth.js";
-import {
-  canAdminister,
-  isTechnician,
-  reportTeam,
-} from "../../contracts/domain.js";
+import { canAdminister, isTechnician } from "../../contracts/domain.js";
 import type { DB } from "../relational-utils.js";
 import { fail } from "../relational-utils.js";
 
@@ -31,9 +27,12 @@ export async function assertTechnicianCanSave(
   db: DB,
   kind: RecordKind,
   id: string,
-  input: { technicianId: string | null; payload: Record<string, any> },
   user: User,
 ) {
+  // Use the same lock as the persistence layer, including administrator writes.
+  await db.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
+    `${kind}:${id}`,
+  ]);
   if (canAdminister(user.role)) return;
   const ownId = await technicianIdForUser(db, user);
   if (!ownId) throw fail(403, "Seu usuário não possui cadastro técnico ativo.");
@@ -48,21 +47,12 @@ export async function assertTechnicianCanSave(
       await db.query(
         kind === "reports"
           ? "SELECT 1 FROM service_order_team WHERE service_order_id=$1 AND technician_id=$2"
-          : "SELECT 1 FROM inspections WHERE id=$1 AND technician_id=$2",
+          : "SELECT 1 FROM inspections WHERE id=$1 AND (technician_id=$2 OR approved_by_technician_id=$2)",
         [id, ownId],
       )
     ).rows[0];
     if (!membership) throw fail(404, "Registro não encontrado.");
   }
-  const assigned =
-    kind === "reports"
-      ? reportTeam(input).some((member) => member.technicianId === ownId)
-      : input.technicianId === ownId;
-  if (!assigned)
-    throw fail(
-      403,
-      kind === "reports"
-        ? "Inclua seu cadastro técnico na equipe do atendimento."
-        : "A inspeção deve ser realizada pelo seu cadastro técnico.",
-    );
+  // A technician may create a record for any registered team. After saving,
+  // only the resulting members (or administrators) retain access.
 }

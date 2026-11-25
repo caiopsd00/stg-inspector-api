@@ -56,7 +56,7 @@ export async function recordRows(
     : "r.technician_id=$5";
   const ownFilter = isReport
     ? "EXISTS (SELECT 1 FROM service_order_team own_team WHERE own_team.service_order_id=r.id AND own_team.technician_id=$8)"
-    : "r.technician_id=$8";
+    : "(r.technician_id=$8 OR r.approved_by_technician_id=$8)";
   const teamSearch = isReport
     ? "OR EXISTS (SELECT 1 FROM service_order_team tm WHERE tm.service_order_id=r.id AND (SELECT u.name FROM technicians t JOIN users u ON u.id=t.user_id WHERE t.id=tm.technician_id) ILIKE '%'||$7||'%')"
     : "";

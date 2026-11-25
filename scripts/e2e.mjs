@@ -17,19 +17,47 @@ process.env.STORAGE_DIR = process.env.STORAGE_DIR || "storage-test";
 const { pool } = await import("../dist/server/db.js");
 const { migrate } = await import("../dist/server/migrate.js");
 const { createUserAndTechnician } = await import("../dist/server/users.js");
+const { saveCatalogItem } =
+  await import("../dist/server/application/catalog-service.js");
 const { createApp } = await import("../dist/server/app.js");
 const { createTemplateSections } =
   await import("../dist/contracts/inspection-template.js");
 await migrate();
 const tag = crypto.randomUUID().slice(0, 8).toUpperCase(),
+  doc = String(Date.now()).slice(-11),
   email = "qa-" + tag.toLowerCase() + "@example.test",
   password = crypto.randomBytes(18).toString("hex");
-await createUserAndTechnician({
+const adminAccount = await createUserAndTechnician({
   name: "QA BR LIFT",
   email,
   password,
   role: "admin",
 });
+const basicTechnician = await saveCatalogItem(
+  "technicians",
+  crypto.randomUUID(),
+  {
+    id: crypto.randomUUID(),
+    name: "Cadastro básico QA " + tag,
+    identifier: String(Number(doc) + 4).padStart(11, "0"),
+    data: {},
+    baseVersion: 0,
+  },
+  adminAccount.user,
+);
+// Professionals are registered through Users, never from inline selectors.
+for (const [index, name] of [
+  "Técnico QA ",
+  "Segundo técnico QA ",
+  "Auxiliar QA ",
+].entries())
+  await createUserAndTechnician({
+    name: (name + tag).toUpperCase(),
+    email: `team-${index}-${tag.toLowerCase()}@example.test`,
+    password,
+    role: "technician",
+    cpf: String(Number(doc) + index).padStart(11, "0"),
+  });
 const server = createApp().listen(0, "127.0.0.1");
 await new Promise((r) => server.once("listening", r));
 const vite = spawn(
@@ -457,9 +485,35 @@ try {
   await page.getByRole("button", { name: "Remover dia", exact: true }).click();
   await openSection("A. Identificação");
   await typeGroup.getByRole("radio", { name: "Externo", exact: true }).check();
-  const doc = String(Date.now()).slice(-11);
   console.log("QA: calendário e indicadores");
   async function catalog(kind, name, identifier, index = 0) {
+    if (kind === "Técnico") {
+      assert.equal(
+        await page
+          .getByRole("button", { name: "+ Técnico", exact: true })
+          .count(),
+        0,
+      );
+      assert.equal(
+        await page
+          .getByRole("button", { name: "Editar técnico", exact: true })
+          .count(),
+        0,
+      );
+      await pickCatalog(
+        page.getByRole("combobox", {
+          name: `Profissional ${index + 1}`,
+          exact: true,
+        }),
+        (
+          await page.evaluate(
+            async () =>
+              (await (await fetch("/api/catalog/technicians")).json()).items,
+          )
+        ).find((t) => t.identifier === identifier).id,
+      );
+      return;
+    }
     await page.getByRole("button", { name: "+ " + kind, exact: true }).click();
     const modal = page.getByRole("dialog", { name: "Cadastro de " + kind });
     await modal.getByLabel("Nome", { exact: true }).fill(name);
@@ -631,46 +685,12 @@ try {
     "technician",
   );
   await openSection(...teamPath, "Profissional 1");
-  // A corrected CPF must clear its error before save, and a cancelled error cannot leak into the form.
-  await page
-    .getByRole("button", { name: "Editar técnico", exact: true })
-    .first()
-    .click();
-  const technicianModal = page.getByRole("dialog", {
-    name: "Cadastro de Técnico",
-  });
-  await technicianModal
-    .getByLabel("CPF", { exact: true })
-    .fill(String(Number(doc) + 1).padStart(11, "0"));
-  await technicianModal
-    .getByRole("button", { name: "Salvar cadastro", exact: true })
-    .click();
-  await technicianModal.getByRole("alert").waitFor();
-  await technicianModal
-    .getByLabel("Nome", { exact: true })
-    .fill("Técnico QA " + tag);
-  assert.equal(await technicianModal.getByRole("alert").count(), 1);
-  await technicianModal.getByLabel("CPF", { exact: true }).fill(doc);
-  assert.equal(await technicianModal.getByRole("alert").count(), 0);
-  await technicianModal
-    .getByRole("button", { name: "Salvar cadastro", exact: true })
-    .click();
-  await technicianModal.waitFor({ state: "hidden" });
-  assert.equal(await page.getByRole("alert").count(), 0);
-  await page
-    .getByRole("button", { name: "Editar técnico", exact: true })
-    .first()
-    .click();
-  await technicianModal
-    .getByLabel("CPF", { exact: true })
-    .fill(String(Number(doc) + 1).padStart(11, "0"));
-  await technicianModal
-    .getByRole("button", { name: "Salvar cadastro", exact: true })
-    .click();
-  await technicianModal.getByRole("alert").waitFor();
-  await technicianModal
-    .getByRole("button", { name: "Cancelar", exact: true })
-    .click();
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Editar técnico", exact: true })
+      .count(),
+    0,
+  );
   assert.equal(await page.getByRole("alert").count(), 0);
   assert.equal(
     await page
@@ -2434,7 +2454,7 @@ try {
       (await (await fetch("/api/users")).json()).users.find(
         (u) => u.technician?.id === id,
       ),
-    firstTech,
+    basicTechnician.id,
   );
   assert.ok(basicUser && basicUser.hasAccess === false);
   const basicCard = page
@@ -2460,6 +2480,112 @@ try {
   await basicDialog
     .getByRole("button", { name: "Cancelar", exact: true })
     .click();
+  // Validate the actual technician UI, not only permission helper functions.
+  await page.getByRole("button", { name: "Sair", exact: true }).click();
+  await page
+    .getByLabel("E-mail", { exact: true })
+    .fill(`team-0-${tag.toLowerCase()}@example.test`);
+  await page.getByLabel("Senha", { exact: true }).fill(password);
+  await page.getByRole("button", { name: "Entrar", exact: true }).click();
+  await page
+    .getByRole("button", { name: "+ Novo atendimento", exact: true })
+    .click();
+  assert.equal(
+    await page.getByRole("button", { name: "Cadastros", exact: true }).count(),
+    0,
+  );
+  await pickCatalog(page.getByLabel("Cliente", { exact: true }), clientId);
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Editar cliente", exact: true })
+      .isDisabled(),
+    true,
+  );
+  assert.equal(
+    await page.getByRole("button", { name: "Excluir", exact: true }).count(),
+    0,
+  );
+  await catalog(
+    "Cliente",
+    "Primeiro do técnico " + tag,
+    "123" + String(Number(doc) + 5),
+  );
+  const firstOwnClient = await page
+    .getByLabel("Cliente", { exact: true })
+    .getAttribute("data-value");
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Editar cliente", exact: true })
+      .isEnabled(),
+    true,
+  );
+  await catalog(
+    "Cliente",
+    "Último do técnico " + tag,
+    "123" + String(Number(doc) + 6),
+  );
+  await pickCatalog(
+    page.getByLabel("Cliente", { exact: true }),
+    firstOwnClient,
+  );
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Editar cliente", exact: true })
+      .isDisabled(),
+    true,
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.screenshot({
+    path: path.join(output, "permissoes-tecnico-mobile.png"),
+    fullPage: true,
+  });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await openSection(...teamPath, "Profissional 1");
+  assert.equal(
+    await page.getByRole("button", { name: "+ Técnico", exact: true }).count(),
+    0,
+  );
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Editar técnico", exact: true })
+      .count(),
+    0,
+  );
+  await pickCatalog(
+    page.getByRole("combobox", { name: "Profissional 1", exact: true }),
+    secondTech,
+  );
+  await page.getByLabel("O.S. OMIE", { exact: true }).fill("DELEGADO-" + tag);
+  await page
+    .getByRole("button", { name: "Salvar rascunho", exact: true })
+    .click();
+  await page
+    .getByText(
+      "Rascunho salvo para a equipe selecionada. Como você não está vinculado, ele não aparecerá na sua lista.",
+      { exact: true },
+    )
+    .waitFor();
+  await page
+    .getByRole("button", { name: "+ Novo atendimento", exact: true })
+    .waitFor();
+  const ownReports = await page.evaluate(
+    async () => (await (await fetch("/api/reports")).json()).items,
+  );
+  assert.ok(!ownReports.some((r) => r.number === "DELEGADO-" + tag));
+  await page.getByRole("button", { name: "Inspeções", exact: true }).click();
+  await page
+    .getByRole("button", { name: "+ Nova inspeção", exact: true })
+    .click();
+  assert.equal(
+    await page.getByRole("button", { name: "+ Técnico", exact: true }).count(),
+    0,
+  );
+  assert.equal(
+    await page
+      .getByRole("button", { name: "Editar técnico", exact: true })
+      .count(),
+    0,
+  );
   assert.deepEqual(errors, []);
   for (const file of ["atendimento.pdf", "inspecao.pdf"])
     assert.equal(

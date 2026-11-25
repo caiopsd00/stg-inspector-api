@@ -75,7 +75,26 @@ de perfil de acesso; a listagem e edição de outros usuários continuam
 exclusivas dos admins.
 As rotas de atendimentos, inspeções, documentos e fotos vinculadas respeitam o
 cadastro técnico ligado ao login: técnicos veem e alteram apenas registros da
-própria equipe (atendimentos) ou vistoria (inspeções); admins mantêm visão total.
+própria equipe, inclusive auxiliares (atendimentos), ou em que realizaram/aprovaram
+a vistoria (inspeções); admins mantêm visão total. Um técnico pode criar um
+registro para outros profissionais. Após salvar, se não estiver vinculado à equipe,
+não poderá mais consultar ou editar esse registro. Os selecionados passam a vê-lo
+desde o primeiro rascunho salvo, sem depender de finalização ou presença no dia.
+
+Em clientes, veículos, equipamentos, peças e locadoras, técnicos podem criar e
+editar somente o último cadastro que eles próprios criaram **de cada tipo**;
+não podem excluir. Criar o próximo revoga a edição do anterior; editar não muda
+a ordem e excluir o último como ADM não libera o penúltimo. A auditoria existente
+identifica o criador, sem inferir autoria por nome ou por uso em relatórios.
+Sem auditoria de criação, somente ADM edita. A API revalida essa regra a cada
+gravação, inclusive reenvios e requisições concorrentes. ADM e Técnico + ADM
+mantêm o gerenciamento completo desses cadastros.
+
+No web, seletores de técnicos/profissionais/aprovadores servem apenas para seleção:
+cadastro e edição ficam na aba **Cadastros**. A API de catálogo técnico legada é
+mantida para compatibilidade, mas somente administradores podem gravar nela.
+A migration `010_catalog_creation_access.sql` cria apenas um índice na auditoria;
+não altera cadastros, CPFs, vínculos ou perfis, nem exige correção manual de dados.
 Não reutilize uma senha já publicada em conversa.
 
 No dia a dia:
@@ -108,7 +127,8 @@ Em outro terminal, na pasta stg-system-web:
     npm run dev
 
 Abra http://localhost:5174. Entre com o login criado. Em Novo atendimento ou
-Nova inspeção, crie cliente, técnico e equipamento no próprio formulário.
+Nova inspeção, crie cliente e equipamento no próprio formulário; usuários técnicos
+são cadastrados por um administrador na aba Cadastros.
 Para testar tudo, preencha, fotografe, assine, finalize e gere o PDF.
 
 Na pasta stg-inspector-mobile:

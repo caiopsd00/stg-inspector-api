@@ -2227,7 +2227,6 @@ test(
                 mutationId: crypto.randomUUID(),
               },
               "PUT",
-              403,
             );
             await call(
               "/api/reports/" + ownReportId,
@@ -2238,7 +2237,6 @@ test(
                 mutationId: crypto.randomUUID(),
               },
               "PUT",
-              403,
             );
             await call(
               "/api/inspections/" + inspectionId,
@@ -2250,10 +2248,7 @@ test(
               "PUT",
               404,
             );
-            assert.equal(
-              (await call("/api/reports/" + ownReportId)).item.id,
-              ownReportId,
-            );
+            await call("/api/reports/" + ownReportId, undefined, "GET", 404);
             assert.equal(
               (await call("/api/inspections/" + ownInspectionId)).item.id,
               ownInspectionId,

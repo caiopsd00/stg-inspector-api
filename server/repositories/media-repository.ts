@@ -60,7 +60,7 @@ export async function mediaAccessRow(
        EXISTS (
          SELECT 1 FROM inspection_files inf
          JOIN inspections i ON i.id=inf.inspection_id
-         JOIN technicians t ON t.id=i.technician_id AND t.active
+         JOIN technicians t ON (t.id=i.technician_id OR t.id=i.approved_by_technician_id) AND t.active
          WHERE inf.file_id=f.id AND t.user_id=$2
        ) AS in_own_inspection
      FROM files f WHERE f.id=$1`,

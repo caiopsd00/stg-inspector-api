@@ -57,7 +57,7 @@ export async function saveRecordKind(
 ) {
   const hash = sha(JSON.stringify({ kind, id, input }));
   return transaction(async (db) => {
-    await assertTechnicianCanSave(db, kind, id, input, user);
+    await assertTechnicianCanSave(db, kind, id, user);
     const receipt = await receiptFor<Entry>(
       db,
       user.id,

@@ -46,6 +46,7 @@ export type Catalog = {
   data: Record<string, any>;
   active: boolean;
   version: number;
+  permissions?: { edit: boolean; archive: boolean };
 };
 export type Period = { start: string; end: string };
 export type PeriodKind = "outbound" | "work" | "inbound";

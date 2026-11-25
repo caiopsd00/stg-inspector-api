@@ -14,7 +14,7 @@
     "storage:migrate": "tsx server/migrate-media-to-gcs.ts",
     "storage:smoke:gcs": "tsx server/smoke-gcs.ts",
     "test": "tsx --test tests/concurrency.test.ts tests/cors.test.ts tests/domain.test.ts tests/media.test.ts tests/object-storage.test.ts tests/relational-utils.test.ts tests/secret-check.test.ts tests/security.test.ts tests/template.test.ts tests/users.test.ts",
-    "test:integration": "tsx --test tests/integration.test.ts",
+    "test:integration": "tsx --test --test-concurrency=1 tests/integration.test.ts tests/permissions.integration.test.ts",
     "test:production": "node scripts/production-smoke.mjs",
     "test:deploy": "node scripts/test-deploy.mjs",
     "security:check": "node scripts/check-secrets.mjs",
