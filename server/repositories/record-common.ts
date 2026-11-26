@@ -1,6 +1,7 @@
 import { reportTeam, type Kind } from "../../contracts/domain.js";
 import { reference } from "./catalog-repository.js";
 import { type DB, fail, insert, fileId, date } from "../relational-utils.js";
+import { validateRecordCompletion } from "../domain/record-completion.js";
 
 export async function fileLink(
   db: DB,
@@ -79,6 +80,14 @@ export async function prepareRecordSave(
       428,
       "Este registro usa o formulário novo. Edite-o pelo web atualizado.",
     );
+  // Saving an already finalized version is not a new finalization. A new
+  // transition to finalized is always validated, even from older clients.
+  if (
+    input.saveIntent === "finalize" ||
+    (input.status === "finalized" &&
+      (input.saveIntent !== "save" || before?.status !== "finalized"))
+  )
+    validateRecordCompletion(kind, input);
   if (p.formRevision === 2)
     for (const key of ["technicianSignature", "clientSignature"]) {
       const signature = p[key];

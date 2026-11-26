@@ -5,28 +5,17 @@ import {
   readingIssue,
   validateSchedule,
 } from "../../contracts/domain.js";
-import { fail } from "../relational-utils.js";
+import { date, fail, year } from "../relational-utils.js";
 
-export function validateInspection(inspection: Inspection, finalized: boolean) {
+export function normalizeInspection(inspection: Inspection, keepEmptyDays = false) {
   if (
     !inspection.documentFields ||
     !inspection.documentImages ||
     !Array.isArray(inspection.sections)
   )
     throw fail(422, "Estrutura da inspeção inválida.");
-  try {
-    validateSchedule(
-      inspection.days || [],
-      finalized,
-      inspection.formRevision === 2,
-    );
-    for (const key of ["006", "007", "hourmeterUpper"])
-      if (readingIssue(inspection.documentFields[key]))
-        throw Error("KM e horímetros devem ser números não negativos ou N/A.");
-  } catch (error) {
-    throw fail(422, (error as Error).message);
-  }
-  if (inspection.days) inspection.days = inspection.days.filter(hasDayData);
+  if (!keepEmptyDays && inspection.days)
+    inspection.days = inspection.days.filter(hasDayData);
   const items = inspection.sections.flatMap((section) => section.items || []);
   const expected = templateInspectionSections.flatMap((section) =>
     section.items.map((item) => item.code),
@@ -45,23 +34,6 @@ export function validateInspection(inspection: Inspection, finalized: boolean) {
     )
   )
     throw fail(422, "Situação de item inválida.");
-  if (
-    finalized &&
-    (items.some((item) => !item.situation) ||
-      ((inspection.formRevision === 2 || !inspection.signature?.uri) &&
-        (!inspection.technicianSignature?.uri ||
-          !inspection.clientSignature?.uri)))
-  )
-    throw fail(
-      422,
-      "Complete o checklist e as assinaturas do técnico e do cliente para finalizar.",
-    );
-  if (
-    finalized &&
-    (inspection.formRevision === 2 || !inspection.signature?.uri) &&
-    !["Aprovada", "Rejeitada"].includes(inspection.documentFields["011"])
-  )
-    throw fail(422, "Selecione o resultado da vistoria para finalizar.");
   inspection.sections = templateInspectionSections.map((section) => ({
     id: section.id,
     name: section.name,
@@ -70,4 +42,31 @@ export function validateInspection(inspection: Inspection, finalized: boolean) {
       ...item,
     })),
   }));
+}
+
+export function validateInspectionCompletion(inspection: Inspection) {
+  validateSchedule(inspection.days || [], true, inspection.formRevision === 2);
+  year(inspection.documentFields["005"]);
+  date(inspection.documentFields["010"], true);
+  date(inspection.documentFields["012"], true);
+  for (const key of ["006", "007", "hourmeterUpper"])
+    if (readingIssue(inspection.documentFields[key]))
+      throw Error("KM e horímetros devem ser números não negativos ou N/A.");
+  const twoSignatures =
+    inspection.formRevision === 2 || !inspection.signature?.uri;
+  if (
+    inspection.sections.some((section) =>
+      section.items.some((item) => !item.situation),
+    ) ||
+    (twoSignatures &&
+      (!inspection.technicianSignature?.uri || !inspection.clientSignature?.uri))
+  )
+    throw Error(
+      "Complete o checklist e as assinaturas do técnico e do cliente para finalizar.",
+    );
+  if (
+    twoSignatures &&
+    !["Aprovada", "Rejeitada"].includes(inspection.documentFields["011"])
+  )
+    throw Error("Selecione o resultado da vistoria para finalizar.");
 }

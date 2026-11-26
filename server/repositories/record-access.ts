@@ -9,6 +9,15 @@ export const recordTables = {
   inspections: "inspections",
 } as const;
 
+// Only an unassigned working draft is private to its original author. As soon
+// as any real team member/approver is assigned, only the normal team rule applies.
+export function unassignedWorkingDraft(kind: RecordKind, alias: "r" | "i") {
+  const noTeam = kind === "reports"
+    ? `NOT EXISTS (SELECT 1 FROM service_order_team t WHERE t.service_order_id=${alias}.id)`
+    : `(${alias}.technician_id IS NULL AND ${alias}.approved_by_technician_id IS NULL)`;
+  return `(${alias}.status='draft' AND ${alias}.working_copy IS NOT NULL AND ${noTeam})`;
+}
+
 export async function technicianIdForUser(
   db: DB,
   user: User,
@@ -46,13 +55,17 @@ export async function assertTechnicianCanSave(
     const membership = (
       await db.query(
         kind === "reports"
-          ? "SELECT 1 FROM service_order_team WHERE service_order_id=$1 AND technician_id=$2"
-          : "SELECT 1 FROM inspections WHERE id=$1 AND (technician_id=$2 OR approved_by_technician_id=$2)",
-        [id, ownId],
+          ? `SELECT 1 FROM service_orders r WHERE r.id=$1 AND (
+               EXISTS (SELECT 1 FROM service_order_team tm WHERE tm.service_order_id=r.id AND tm.technician_id=$2)
+               OR (r.created_by=$3 AND ${unassignedWorkingDraft(kind, "r")}))`
+          : `SELECT 1 FROM inspections i WHERE i.id=$1 AND (
+               i.technician_id=$2 OR i.approved_by_technician_id=$2
+               OR (i.created_by=$3 AND ${unassignedWorkingDraft(kind, "i")}))`,
+        [id, ownId, user.id],
       )
     ).rows[0];
     if (!membership) throw fail(404, "Registro não encontrado.");
   }
   // A technician may create a record for any registered team. After saving,
-  // only the resulting members (or administrators) retain access.
+  // an assigned record is visible only to its resulting members or administrators.
 }

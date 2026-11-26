@@ -776,7 +776,103 @@ test(
         },
       );
       await scenario(
-        "API rejeita horários e KM regressivos, inclusive entre tipos de período",
+        "cópia de trabalho guarda ficha incompleta e dados fora das regras sem alterar as restrições finais",
+        async () => {
+          const day = {
+            ...newDay("draft-day"),
+            date: "",
+            periods: [{
+              id: "draft-period", kind: "work", start: "09:00", end: "08:00",
+              pauseMinutes: "999", odometerStart: "200", odometerEnd: "100",
+            }],
+          };
+          for (const kind of ["reports", "inspections"] as const) {
+            const id = crypto.randomUUID();
+            const url = "/api/" + kind + "/" + id;
+            const payload = kind === "reports"
+              ? {
+                  ...newReport(),
+                  additionalTechnicians: [{ technicianId: "", role: "auxiliary" }],
+                  parts: [{ id: "incomplete", code: "", description: "", supplier: "", quantity: -1, kind: "requested", codeHistory: [] }],
+                  days: [day],
+                }
+              : {
+                  documentFields: { "007": "abc", "010": "31/02/2026" },
+                  sections: createTemplateSections(),
+                  documentImages: {},
+                  days: [day],
+                };
+            const body = {
+              ...input, number: "", payload, status: "draft", saveIntent: "draft", mutationId: crypto.randomUUID(),
+            };
+            const { item } = await call(url, body, "PUT");
+            assert.equal(item.number, "");
+            assert.deepEqual(item.payload.days[0], day);
+            assert.deepEqual((await call(url)).item, item);
+            assert.deepEqual((await call(url, body, "PUT")).item, item);
+            if ("parts" in payload) assert.deepEqual(item.payload.parts, payload.parts);
+            if ("documentFields" in payload) assert.deepEqual(item.payload.documentFields, payload.documentFields);
+            const changed = {
+              ...body,
+              number: input.number, // Existing/duplicate O.S. still isn't reserved by a draft.
+              baseVersion: item.version,
+              mutationId: crypto.randomUUID(),
+            };
+            const saved = (await call(url, changed, "PUT")).item;
+            await call(url + "/document/pdf", undefined, "GET", 422);
+            await call(url, {
+              ...changed, status: "finalized", saveIntent: "finalize", baseVersion: saved.version, mutationId: crypto.randomUUID(),
+            }, "PUT", 422);
+            const table = kind === "reports" ? "service_orders" : "inspections";
+            assert.equal((await pool.query(`SELECT number FROM ${table} WHERE id=$1`, [id])).rows[0].number, null);
+            if (kind === "reports") {
+              const finalized = (await call(url, {
+                ...input, number: "COMPLETO-" + id, baseVersion: saved.version, saveIntent: "finalize", mutationId: crypto.randomUUID(),
+              }, "PUT")).item;
+              assert.equal(finalized.status, "finalized");
+              assert.equal((await pool.query("SELECT working_copy FROM service_orders WHERE id=$1", [id])).rows[0].working_copy, null);
+            }
+            await pool.query(`DELETE FROM ${table} WHERE id=$1`, [id]);
+          }
+        },
+      );
+      await scenario(
+        "PDF valida cadastros e vínculos reais da cópia de trabalho sem bloquear seu salvamento",
+        async () => {
+          const otherClientId = crypto.randomUUID();
+          await call("/api/catalog/clients/" + otherClientId, {
+            name: "Cliente divergente " + tag,
+            identifier: "124" + doc, baseVersion: 0,
+          }, "PUT");
+          const variants = [
+            [{ clientId: crypto.randomUUID() }, /Cadastro inexistente.*clients/],
+            [{ technicianId: crypto.randomUUID() }, /Cadastro inexistente.*technicians/],
+            [{ clientId: otherClientId }, /Equipamento não pertence/],
+            [{ payload: { ...p, parts: [{ ...p.parts[0], catalogId: crypto.randomUUID() }] } }, /Cadastro inexistente.*parts/],
+          ] as const;
+          for (const [override, expected] of variants) {
+            const url = "/api/reports/" + crypto.randomUUID();
+            const body = {
+              ...input, ...override, number: crypto.randomUUID(), status: "draft",
+              saveIntent: "draft", mutationId: crypto.randomUUID(),
+            };
+            const saved = (await call(url, body, "PUT")).item;
+            assert.equal(saved.status, "draft");
+            assert.match((await call(url + "/document/pdf", undefined, "GET", 422)).error, expected);
+          }
+          const validUrl = "/api/reports/" + crypto.randomUUID();
+          await call(validUrl, {
+            ...input, number: crypto.randomUUID(), status: "draft", saveIntent: "draft", mutationId: crypto.randomUUID(),
+          }, "PUT");
+          const pdf = await fetch(base + validUrl + "/document/pdf", {
+            headers: { Authorization: "Bearer " + token },
+          });
+          assert.equal(pdf.status, 200, await pdf.clone().text());
+          assert.equal(Buffer.from(await pdf.arrayBuffer()).subarray(0, 4).toString(), "%PDF");
+        },
+      );
+      await scenario(
+        "rascunhos de atendimento preservam horários e KM regressivos; só conclusão e PDF rejeitam",
         async () => {
           for (const field of [
             "start",
@@ -791,18 +887,28 @@ test(
               periods[2].odometerEnd = "100";
               periods[3][field] = "5";
             }
-            await call(
-              "/api/reports/" + crypto.randomUUID(),
-              {
-                ...input,
-                number: crypto.randomUUID(),
-                status: "draft",
-                payload,
-                mutationId: crypto.randomUUID(),
-              },
-              "PUT",
-              422,
-            );
+            const url = "/api/reports/" + crypto.randomUUID();
+            const body = {
+              ...input,
+              number: crypto.randomUUID(),
+              status: "draft",
+              payload,
+              mutationId: crypto.randomUUID(),
+            };
+            const { item: draft } = await call(url, body, "PUT");
+            assert.equal(draft.status, "draft");
+            assert.equal((await call(url)).item.version, draft.version);
+            const expected = field === "start" ? /horário|anterior/i : /KM não pode retroceder/;
+            const rejected = await call(url, {
+              ...body,
+              status: "finalized",
+              saveIntent: "save",
+              baseVersion: draft.version,
+              mutationId: crypto.randomUUID(),
+            }, "PUT", 422);
+            assert.match(rejected.error, expected);
+            assert.match((await call(url + "/document/pdf", undefined, "GET", 422)).error, expected);
+            await pool.query("DELETE FROM service_orders WHERE id=$1", [draft.id]);
           }
         },
       );
@@ -884,7 +990,7 @@ test(
       );
       const first = await call("/api/reports/" + id, input, "PUT");
       await scenario(
-        "relatório e inspeção rejeitam virada de dia e persistem a divisão em duas datas",
+        "relatório e inspeção guardam rascunho com virada de dia e bloqueiam o PDF até corrigir",
         async () => {
           for (const kind of ["reports", "inspections"] as const) {
             const recordId = crypto.randomUUID();
@@ -919,24 +1025,16 @@ test(
               payload,
               mutationId: crypto.randomUUID(),
             };
+            const url = "/api/" + kind + "/" + recordId;
+            const initial = (await call(url, body, "PUT")).item;
+            assert.equal(initial.payload.days[0].periods[0].end, "01:00");
             const rejected = await call(
-              "/api/" + kind + "/" + recordId,
-              body,
-              "PUT",
+              url + "/document/pdf",
+              undefined,
+              "GET",
               422,
             );
             assert.match(JSON.stringify(rejected), /23:59/);
-            assert.equal(
-              (
-                await pool.query(
-                  "SELECT count(*)::int n FROM " +
-                    (kind === "reports" ? "service_orders" : "inspections") +
-                    " WHERE id=$1",
-                  [recordId],
-                )
-              ).rows[0].n,
-              0,
-            );
             period.end = "23:59";
             payload.days.push({
               ...newDay("second"),
@@ -946,7 +1044,7 @@ test(
             const saved = (
               await call(
                 "/api/" + kind + "/" + recordId,
-                { ...body, mutationId: crypto.randomUUID() },
+                { ...body, baseVersion: initial.version, mutationId: crypto.randomUUID() },
                 "PUT",
               )
             ).item;
@@ -1115,7 +1213,7 @@ test(
           );
           await save(
             { ...revised, reasons: [{ ...revised.reasons[0], services: [] }] },
-            "draft",
+            "finalized",
             422,
           );
           await save(
@@ -1616,7 +1714,39 @@ test(
             odometerEnd: "6",
           });
           await call(url, backwardsKm, "PUT", 422);
-          const saved = (await call(url, body, "PUT")).item;
+          const invalidDraft = {
+            ...backwardsKm,
+            status: "draft",
+            saveIntent: "save",
+            mutationId: crypto.randomUUID(),
+          };
+          const draft = (await call(url, invalidDraft, "PUT")).item;
+          assert.equal(draft.status, "draft");
+          assert.equal((await call(url)).item.payload.days[0].periods[1].odometerStart, "5");
+          assert.deepEqual((await call(url, invalidDraft, "PUT")).item, draft);
+          const assertKmBlocksCompletion = async (version: number) => {
+            const rejected = await call(url, {
+              ...backwardsKm,
+              saveIntent: "finalize",
+              baseVersion: version,
+              mutationId: crypto.randomUUID(),
+            }, "PUT", 422);
+            assert.match(rejected.error, /KM não pode retroceder/);
+            assert.match((await call(url + "/document/pdf", undefined, "GET", 422)).error, /KM não pode retroceder/);
+          };
+          await assertKmBlocksCompletion(draft.version);
+          const saved = (await call(url, {
+            ...body,
+            baseVersion: draft.version,
+            saveIntent: "finalize",
+          }, "PUT")).item;
+          if (process.env.TEST_PDF) {
+            const pdf = await fetch(base + url + "/document/pdf", {
+              headers: { Authorization: "Bearer " + token },
+            });
+            assert.equal(pdf.status, 200, await pdf.clone().text());
+            assert.equal(Buffer.from(await pdf.arrayBuffer()).subarray(0, 4).toString(), "%PDF");
+          }
           const reloaded = (await call(url)).item;
           assert.deepEqual(reloaded, saved);
           assert.equal(reloaded.payload.days[0].participants, undefined);
@@ -1678,6 +1808,16 @@ test(
             reloaded.payload.clientSignature.signerName,
             "CLIENTE DA INSPEÇÃO",
           );
+          const edited = (await call(url, {
+            ...backwardsKm,
+            saveIntent: "save",
+            baseVersion: compatibleSave.version,
+            mutationId: crypto.randomUUID(),
+          }, "PUT")).item;
+          assert.equal(edited.status, "finalized");
+          assert.equal(edited.payload.finalizedAt, saved.payload.finalizedAt);
+          assert.equal(edited.payload.days[0].periods[1].odometerStart, "5");
+          await assertKmBlocksCompletion(edited.version);
         },
       );
       const extraSlot = sections
@@ -1721,14 +1861,14 @@ test(
         }
       }
       await scenario(
-        "entidades tipadas sem JSON de negócio, checklist completo e arquivos vinculados",
+        "entidades tipadas, cópia de trabalho separada, checklist completo e arquivos vinculados",
         async () => {
           const json = (
             await pool.query(
               "SELECT table_name FROM information_schema.columns WHERE table_schema='public' AND data_type IN ('json','jsonb') ORDER BY table_name",
             )
           ).rows.map((r) => r.table_name);
-          assert.deepEqual(json, ["audit", "audit", "sync_receipts"]);
+          assert.deepEqual(json, ["audit", "audit", "inspections", "service_orders", "sync_receipts"]);
           assert.equal(
             (
               await pool.query(

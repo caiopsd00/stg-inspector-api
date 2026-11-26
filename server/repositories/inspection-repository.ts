@@ -148,6 +148,7 @@ export async function saveInspection(
   id: string,
   input: any,
   userId: string,
+  workingCopy: string | null = null,
 ) {
   const { before, common, p, tech, equipment } = await prepareRecordSave(
     db,
@@ -183,6 +184,7 @@ export async function saveInspection(
       : (equipment?.data[catalogField] ?? null));
   await upsert(db, "inspections", {
     ...common,
+    working_copy: workingCopy,
     name: p.name || "",
     technician_id: input.technicianId,
     technician_name: performedBy || null,

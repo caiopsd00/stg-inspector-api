@@ -42,6 +42,7 @@ export async function listRecordKind(
     return read(db, {
       ...filter,
       ownTechnicianId,
+      ownUserId: ownTechnicianId ? user.id : undefined,
       technicianId: canAdminister(user.role) ? filter.technicianId : undefined,
       searchTechnician: canAdminister(user.role),
     });

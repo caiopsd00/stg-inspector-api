@@ -270,6 +270,7 @@ test(
         technicianId: otherTech,
         date: "2026-11-25",
         status: "draft",
+        saveIntent: "draft",
         baseVersion: 0,
         mutationId: uuid(),
         payload:
@@ -282,6 +283,38 @@ test(
                 approvedByTechnicianId: ownTech,
               },
       });
+      for (const kind of ["reports", "inspections"]) {
+        const url = `/${kind}/${uuid()}`;
+        const base = recordInput(kind);
+        const payload = kind === "reports"
+          ? newReport()
+          : { documentFields: {}, documentImages: {}, sections: createTemplateSections(), approvedByTechnicianId: null };
+        const saved = (await call(tech, url, { ...base, technicianId: null, payload })).item;
+        assert.equal(saved.draftAuthorId, accounts[1].user.id);
+        assert.deepEqual(saved.serverTechnicianIds, []);
+        assert.ok((await call(tech, "/" + kind)).items.some((item: any) => item.id === saved.id));
+        assert.ok(!(await call(other, "/" + kind)).items.some((item: any) => item.id === saved.id));
+        assert.equal((await call(tech, url)).item.id, saved.id);
+        await call(other, url, undefined, "GET", 404);
+        await call(other, url, { ...base, baseVersion: saved.version }, "PUT", 404);
+        const withMedia = kind === "reports"
+          ? {
+              ...payload, reasons: [{ id: uuid(), description: "Foto do caso", pending: "",
+                services: [{ id: uuid(), description: "", notes: "", photos: [media] }] }],
+            }
+          : { ...payload, documentImages: { "013": [media] } };
+        const attached = (await call(admin, url, {
+          ...base, technicianId: null, payload: withMedia, baseVersion: saved.version, mutationId: uuid(),
+        })).item;
+        assert.equal((await call(tech, "/media/" + media.id)).byteLength > 0, true);
+        const delegated = (await call(tech, url, {
+          ...base, payload: withMedia, baseVersion: attached.version, mutationId: uuid(),
+        })).item;
+        assert.ok(!delegated.draftAuthorId, "Vincular outra pessoa retira a exceção de autoria");
+        assert.equal((await call(other, url)).item.id, saved.id);
+        await call(tech, url, undefined, "GET", 404);
+        await call(tech, "/media/" + media.id, undefined, "GET", 404);
+      }
       for (const kind of ["reports", "inspections"]) {
         const id = uuid();
         const input = recordInput(kind);
@@ -313,6 +346,7 @@ test(
           );
           await call(other, `/${kind}/${id}`, {
             ...saved,
+            saveIntent: "draft",
             baseVersion: 1,
             mutationId: uuid(),
             payload: {
@@ -323,9 +357,12 @@ test(
             },
           });
           const team = (await call(tech, `/${kind}/${id}`)).item;
-          await call(tech, `/${kind}/${id}/document/pdf`);
+          // The team member can reach the document, but the empty record
+          // still needs to pass completion rules before it can export.
+          await call(tech, `/${kind}/${id}/document/pdf`, undefined, "GET", 422);
           await call(tech, `/${kind}/${id}`, {
             ...team,
+            saveIntent: "draft",
             baseVersion: team.version,
             mutationId: uuid(),
           });
@@ -336,11 +373,12 @@ test(
             ),
           );
           const approved = (await call(tech, `/${kind}/${id}`)).item;
-          await call(tech, `/${kind}/${id}/document/docx`);
+          await call(tech, `/${kind}/${id}/document/docx`, undefined, "GET", 422);
           await call(tech, "/media/" + media.id);
           const removed = (
             await call(tech, `/${kind}/${id}`, {
               ...approved,
+              saveIntent: "draft",
               baseVersion: approved.version,
               mutationId: uuid(),
               payload: { ...approved.payload, approvedByTechnicianId: null },

@@ -1,6 +1,7 @@
 import { pool } from "../db.js";
 import { mediaStorageKey } from "../object-storage/index.js";
 import type { DB } from "../relational-utils.js";
+import { unassignedWorkingDraft } from "./record-access.js";
 
 export type MediaAccessRow = {
   mime: string;
@@ -56,12 +57,22 @@ export async function mediaAccessRow(
          JOIN service_order_team tm ON tm.service_order_id=sf.service_order_id
          JOIN technicians t ON t.id=tm.technician_id AND t.active
          WHERE sf.file_id=f.id AND t.user_id=$2
+       ) OR EXISTS (
+         SELECT 1 FROM service_order_files sf
+         JOIN service_orders r ON r.id=sf.service_order_id
+         JOIN technicians t ON t.user_id=r.created_by AND t.active
+         WHERE sf.file_id=f.id AND r.created_by=$2 AND ${unassignedWorkingDraft("reports", "r")}
        ) AS in_own_report,
        EXISTS (
          SELECT 1 FROM inspection_files inf
          JOIN inspections i ON i.id=inf.inspection_id
          JOIN technicians t ON (t.id=i.technician_id OR t.id=i.approved_by_technician_id) AND t.active
          WHERE inf.file_id=f.id AND t.user_id=$2
+       ) OR EXISTS (
+         SELECT 1 FROM inspection_files inf
+         JOIN inspections i ON i.id=inf.inspection_id
+         JOIN technicians t ON t.user_id=i.created_by AND t.active
+         WHERE inf.file_id=f.id AND i.created_by=$2 AND ${unassignedWorkingDraft("inspections", "i")}
        ) AS in_own_inspection
      FROM files f WHERE f.id=$1`,
     [id, userId],

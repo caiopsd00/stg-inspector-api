@@ -17,7 +17,7 @@ export const catalogInput = z.object({
   mutationId: idSchema.optional(),
 });
 export const recordInput = z.object({
-  number: z.string().trim().min(1, "Número obrigatório.").max(100),
+  number: z.string().max(100),
   clientId: idSchema.nullable(),
   technicianId: idSchema.nullable(),
   equipmentId: idSchema.nullable(),
@@ -27,6 +27,7 @@ export const recordInput = z.object({
     .regex(/^\d{4}-\d{2}-\d{2}$/)
     .optional(),
   status: z.enum(["draft", "finalized"]),
+  saveIntent: z.enum(["save", "draft", "finalize"]).optional(),
   payload: z.record(z.string(), z.any()),
   baseVersion: z.number().int().min(0),
   mutationId: idSchema,
@@ -236,4 +237,23 @@ export const inspectionSchema = z.object({
   signature: media.optional(),
   technicianSignature: media.nullable().optional(),
   clientSignature: media.nullable().optional(),
+});
+
+// Keep payload types and limits, not rules that require a completed field.
+const workingDate = z.string().max(32);
+export const workingReportSchema = reportSchema.extend({
+  additionalTechnicians: z.array(z.object({
+    technicianId: z.string().max(140).regex(/^[A-Za-z0-9_-]*$/),
+    role: z.enum(["technician", "auxiliary"]),
+    charged: yesNo.optional(),
+  })).optional(),
+  parts: z.array(reportSchema.shape.parts.element.extend({
+    quantity: z.number().finite(),
+  })).max(1000),
+  days: z.array(reportSchema.shape.days.element.extend({
+    date: workingDate,
+  })).max(365),
+});
+export const workingInspectionSchema = inspectionSchema.extend({
+  days: z.array(scheduleDay.extend({ date: workingDate })).max(365).optional(),
 });

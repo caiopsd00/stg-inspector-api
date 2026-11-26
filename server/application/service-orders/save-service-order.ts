@@ -1,7 +1,6 @@
 import { z } from "zod";
 import {
   hasDayData,
-  validateReport,
   validateReportTeam,
   type Report,
 } from "../../../contracts/domain.js";
@@ -23,12 +22,9 @@ export function saveServiceOrderEntry(
     throw fail(422, "Data inválida.");
   try {
     validateReportTeam(input);
-    validateReport(input.payload as Report, input.status === "finalized");
   } catch (error) {
     throw fail(422, (error as Error).message);
   }
   input.payload.days = (input.payload as Report).days.filter(hasDayData);
-  if (input.status === "finalized" && (!input.clientId || !input.technicianId))
-    throw fail(422, "Selecione cliente e técnico antes de finalizar.");
   return saveRecordKind("reports", id, input, user, saveServiceOrder);
 }

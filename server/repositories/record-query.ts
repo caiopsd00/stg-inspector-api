@@ -1,7 +1,7 @@
 import type { Kind } from "../../contracts/domain.js";
 import type { DB } from "../relational-utils.js";
 import { isoDate, stamp, reading, textNA } from "../relational-utils.js";
-import { recordTables } from "./record-access.js";
+import { recordTables, unassignedWorkingDraft } from "./record-access.js";
 
 export type RecordFilter = {
   id?: string;
@@ -12,6 +12,7 @@ export type RecordFilter = {
   status?: "draft" | "finalized";
   q?: string;
   ownTechnicianId?: string | null;
+  ownUserId?: string;
   searchTechnician?: boolean;
 };
 
@@ -57,6 +58,7 @@ export async function recordRows(
   const ownFilter = isReport
     ? "EXISTS (SELECT 1 FROM service_order_team own_team WHERE own_team.service_order_id=r.id AND own_team.technician_id=$8)"
     : "(r.technician_id=$8 OR r.approved_by_technician_id=$8)";
+  const unassigned = unassignedWorkingDraft(kind, "r");
   const teamSearch = isReport
     ? "OR EXISTS (SELECT 1 FROM service_order_team tm WHERE tm.service_order_id=r.id AND (SELECT u.name FROM technicians t JOIN users u ON u.id=t.user_id WHERE t.id=tm.technician_id) ILIKE '%'||$7||'%')"
     : "";
@@ -65,7 +67,8 @@ export async function recordRows(
       `SELECT r.*,client.name AS client_name,client.cnpj AS client_cnpj,
         professional.name AS technician_name,technician.cpf AS technician_cpf,
         ${isReport ? "" : "COALESCE(professional.name,r.performed_by) AS performed_by,COALESCE(professional.name,r.examiner) AS examiner,COALESCE(approver.name,r.approved_by) AS approved_by,"}
-        ${techId} primary_technician_id,${techName} primary_technician_name
+        ${techId} primary_technician_id,${techName} primary_technician_name,
+        CASE WHEN ${unassigned} THEN r.created_by END AS draft_author_id
         FROM ${table} r ${techJoin}
         LEFT JOIN clients client ON client.id=r.client_id
         LEFT JOIN technicians technician ON technician.id=${techId}
@@ -73,8 +76,8 @@ export async function recordRows(
         ${isReport ? "" : "LEFT JOIN technicians approved ON approved.id=r.approved_by_technician_id LEFT JOIN users approver ON approver.id=approved.user_id"}
     WHERE ($1::text IS NULL OR r.id=$1) AND ($2::date IS NULL OR r.date>=$2) AND ($3::date IS NULL OR r.date<=$3)
     AND ($4::text IS NULL OR r.client_id=$4) AND ($5::text IS NULL OR ${teamFilter}) AND ($6::text IS NULL OR r.status=$6)
-    AND ($7::text IS NULL OR r.number ILIKE '%'||$7||'%' OR client.name ILIKE '%'||$7||'%' OR ($9::boolean AND (${techName} ILIKE '%'||$7||'%' ${teamSearch})))
-    AND ($8::text IS NULL OR ${ownFilter}) ORDER BY r.updated_at DESC`,
+    AND ($7::text IS NULL OR COALESCE(r.working_copy->>'number',r.number) ILIKE '%'||$7||'%' OR client.name ILIKE '%'||$7||'%' OR ($9::boolean AND (${techName} ILIKE '%'||$7||'%' ${teamSearch})))
+    AND ($8::text IS NULL OR ${ownFilter} OR (r.created_by=$10::text AND ${unassigned})) ORDER BY r.updated_at DESC`,
       [
         filter.id,
         filter.from,
@@ -85,6 +88,7 @@ export async function recordRows(
         filter.q,
         filter.ownTechnicianId,
         filter.searchTechnician !== false,
+        filter.ownUserId,
       ],
     )
   ).rows;
@@ -123,10 +127,11 @@ export async function recordRows(
 }
 
 export function entryFromRow(r: any, kind: Kind, payload: any) {
+  const copy = r.working_copy;
   return {
     id: r.id,
     kind,
-    number: r.number,
+    number: copy?.number ?? r.number ?? "",
     clientId: r.client_id,
     equipmentId: r.equipment_id,
     vehicleId: r.vehicle_id,
@@ -135,11 +140,35 @@ export function entryFromRow(r: any, kind: Kind, payload: any) {
     technicianName: r.primary_technician_name || undefined,
     date: isoDate(r.date),
     status: r.status,
-    payload,
+    payload: copy ? {
+      ...copy.payload,
+      clientSnapshot: payload.clientSnapshot,
+      technicianSnapshot: payload.technicianSnapshot,
+      vehicleSnapshot: payload.vehicleSnapshot,
+      ...(kind === "reports"
+        ? { teamSnapshot: payload.teamSnapshot, auxiliaryNames: payload.auxiliaryNames }
+        : { id: r.id, createdAt: stamp(r.created_at), updatedAt: stamp(r.updated_at), finalizedAt: stamp(r.finalized_at) || null }),
+    } : payload,
     version: r.version,
     createdAt: stamp(r.created_at),
     updatedAt: stamp(r.updated_at),
     finalizedAt: stamp(r.finalized_at),
     finalizedBy: r.finalized_by,
+    ...(copy ? {
+      clientId: copy.clientId,
+      equipmentId: copy.equipmentId,
+      vehicleId: copy.vehicleId,
+      technicianId: copy.technicianId,
+      workingCopy: true,
+      ...(r.draft_author_id ? { draftAuthorId: r.draft_author_id } : {}),
+      documentSignatures: {
+        technicianSignature: payload.technicianSignature,
+        clientSignature: payload.clientSignature,
+        ...(kind === "inspections" ? { signature: payload.signature } : {}),
+      },
+      serverTechnicianIds: kind === "reports"
+        ? payload.teamSnapshot.map((member: any) => member.technicianId)
+        : [r.technician_id, r.approved_by_technician_id].filter(Boolean),
+    } : {}),
   };
 }

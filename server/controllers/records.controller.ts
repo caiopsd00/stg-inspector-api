@@ -1,4 +1,5 @@
 import type { Request, Response } from "express";
+import { z } from "zod";
 
 import { listRecords, saveEntry } from "../application/record-service.js";
 import { fail } from "../relational-utils.js";
@@ -11,6 +12,8 @@ import {
   recordFilter,
   recordInput,
   reportSchema,
+  workingInspectionSchema,
+  workingReportSchema,
 } from "../validation.js";
 
 export const recordsController = {
@@ -30,8 +33,13 @@ export const recordsController = {
     const kind = kinds.parse(req.params.kind);
     const id = idSchema.parse(req.params.id);
     const input = recordInput.parse(req.body);
+    const working = input.saveIntent === "draft";
+    if (!working)
+      input.number = z.string().trim().min(1, "Número obrigatório.").parse(input.number);
     input.payload = (
-      kind === "reports" ? reportSchema : inspectionSchema
+      kind === "reports"
+        ? working ? workingReportSchema : reportSchema
+        : working ? workingInspectionSchema : inspectionSchema
     ).parse(input.payload);
     res.json({ item: await saveEntry(kind, id, input, req.user!) });
   },

@@ -169,6 +169,7 @@ export async function saveServiceOrder(
   id: string,
   input: any,
   userId: string,
+  workingCopy: string | null = null,
 ) {
   const { before, common, p, oldTeam } = await prepareRecordSave(
     db,
@@ -181,6 +182,7 @@ export async function saveServiceOrder(
   const eq = p.equipment;
   await upsert(db, "service_orders", {
     ...common,
+    working_copy: workingCopy,
     type: p.type,
     operator: p.operator,
     requester: p.requester,
